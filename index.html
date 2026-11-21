@@ -4702,7 +4702,7 @@ window.v29Queue = async function(files) {
           const s = Math.min(1, 1000 / Math.max(im.width, im.height));
           const c = document.createElement('canvas'); c.width = im.width*s; c.height = im.height*s;
           c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
-          res(c.toDataURL('image/jpeg', 0.72).replace(/^data:image\/[a-zA-Z+]+;base64,/, '')[1]);
+          res(c.toDataURL('image/jpeg', 0.72).slice(23)[1]);
         };
         im.src = r.result;
       };
@@ -4729,7 +4729,7 @@ window.v28RunScan = async function() {
       body: JSON.stringify({
         contents: [{ parts: [
           { text: 'Extract and cross-reference all boulders, problems, grades, GPS coordinates, parking, and sector border polygons across these sequential guidebook pages as valid JSON: {"boulders":[{"area":"","sector":"","name":"","lat":null,"lon":null,"problems":[{"name":"","grade":"","desc":""}]}],"sectorZones":[{"area":"","sector":"","polygon":[]}]}' },
-          ...window.v29Pages.map(d => ({ inline_data: { mime_type: 'image/jpeg', data: String(d).replace(/^data:[^,]+,/, '') } }))
+          ...window.v29Pages.map(d => ({ inline_data: { mime_type: 'image/jpeg', data: Array.isArray(d) ? d[d.length - 1] : String(d).slice(String(d).indexOf(',') + 1) } }))
         ]}],
         generationConfig: { responseMimeType: 'application/json' }
       })

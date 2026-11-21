@@ -4702,7 +4702,7 @@ window.v29Queue = async function(files) {
           const s = Math.min(1, 1000 / Math.max(im.width, im.height));
           const c = document.createElement('canvas'); c.width = im.width*s; c.height = im.height*s;
           c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
-          res(c.toDataURL('image/jpeg', 0.72).slice(23)[1]);
+          res(c.toDataURL('image/jpeg', 0.72).slice(23));
         };
         im.src = r.result;
       };

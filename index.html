@@ -4734,6 +4734,8 @@ window.v28RunScan = async function() {
         generationConfig: { responseMimeType: 'application/json' }
       })
     });
+      if (resp.status !== 503 && resp.status !== 429) break;
+    }
     if (!resp.ok) {
       out.textContent = 'HTTP ' + resp.status + ': ' + await resp.text();
       return;

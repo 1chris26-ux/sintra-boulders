@@ -4728,7 +4728,7 @@ window.v28RunScan = async function() {
       body: JSON.stringify({
         contents: [{ parts: [
           { text: 'Extract and cross-reference all boulders, problems, grades, GPS coordinates, parking, and sector border polygons across these sequential guidebook pages as valid JSON: {"boulders":[{"area":"","sector":"","name":"","lat":null,"lon":null,"problems":[{"name":"","grade":"","desc":""}]}],"sectorZones":[{"area":"","sector":"","polygon":[]}]}' },
-          ...window.v29Pages.map(d => ({ inline_data: { mime_type: 'image/jpeg', data: d } }))
+          ...window.v29Pages.map(d => ({ inline_data: { mime_type: 'image/jpeg', data: String(d).replace(/^data:[^,]+,/, '') } }))
         ]}],
         generationConfig: { responseMimeType: 'application/json' }
       })

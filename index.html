@@ -4661,6 +4661,7 @@ type,area,sector,name,problem_name,grade,latitude,longitude,estimated,descriptio
     <div style="display:flex; gap:6px; margin:4px 0 10px;">
       <input id="v28ApiKey" type="password" placeholder="Paste AIza... key" style="flex:1; padding:6px 8px; border:1px solid #cbd5e1; border-radius:6px;" />
       <button onclick="localStorage.setItem('v28_gemini_key', document.getElementById('v28ApiKey').value.trim()); alert('Saved locally!');" style="padding:6px 10px; border-radius:6px; border:1px solid #cbd5e1; cursor:pointer;">Save</button>
+      <button onclick="v35TestKey()" style="padding:6px 10px; border-radius:6px; background:#0284c7; color:#fff; border:none; font-weight:700; cursor:pointer;">Test Key</button>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
   <label style="padding:10px;background:#0f172a;color:#fff;border-radius:8px;font-size:12px;font-weight:700;text-align:center;cursor:pointer;">📸 Snap Page (+ Queue)<input type="file" accept="image/*" capture="environment" style="display:none" onchange="v29Queue(this.files)"></label>
@@ -4766,6 +4767,26 @@ window.v33SaveScanned = function() {
   if (csvEl) csvEl.textContent += rows;
   alert('Added ' + list.length + ' boulders! Click "Download Backup HTML" in the sidebar to save your updated map.');
   document.getElementById('v28ScanModal').style.display = 'none';
+};
+
+
+window.v35TestKey = async function() {
+  const key = document.getElementById('v28ApiKey').value.trim();
+  const out = document.getElementById('v28ScanOut');
+  if (!key) return alert('Paste your API key first.');
+  out.textContent = '🔍 Testing connection to Google Gemini API...';
+  try {
+    const r = await fetch('https://googleapis.com' + encodeURIComponent(key));
+    const j = await r.json();
+    if (!r.ok || j.error) {
+      out.textContent = '❌ API Key Error (' + r.status + '): ' + (j.error?.message || JSON.stringify(j));
+      return;
+    }
+    const models = (j.models || []).map(m => m.name.replace('models/', '')).filter(n => n.includes('gemini'));
+    out.textContent = '✅ Connection works! Available models on your key:\n' + models.join(', ');
+  } catch (e) {
+    out.textContent = '❌ Network/Browser Block: ' + e.message + '\nCheck: AdBlocker/Brave Shields, VPN, or API key Website Restrictions in Google AI Studio.';
+  }
 };
 
 </script>

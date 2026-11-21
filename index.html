@@ -7619,67 +7619,121 @@ type,area,sector,name,problem_name,grade,latitude,longitude,estimated,descriptio
   <button onclick="document.getElementById('sBox').style.display='flex'" style="background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;border:none;border-radius:999px;padding:6px 13px;font-size:12px;font-weight:700;cursor:pointer;">📷 Scan Guidebook</button>
   <button onclick="document.getElementById('jBox').style.display='flex'" style="background:#d97706;color:#fff;border:none;border-radius:999px;padding:6px 13px;font-size:12px;font-weight:700;cursor:pointer;">💾 JSON Data</button>
 </div>
-
 <div id="jBox" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:2500;align-items:center;justify-content:center;padding:12px;">
   <div style="background:#fff;border-radius:12px;max-width:440px;width:100%;padding:16px;font-family:sans-serif;">
-    <div style="display:flex;justify-content:space-between;margin-bottom:8px;"><strong>💾 JSON Import / Export</strong><button onclick="document.getElementById('jBox').style.display='none'">✕</button></div>
-    <p style="font-size:12px;color:#475569;margin:0 0 8px;">Import <code>sintra_seed_v28.json</code> (or Northern Portugal JSON) onto your phone:</p>
-    <input type="file" accept=".json,application/json" onchange="impJson(this.files)" style="width:100%;margin-bottom:10px;">
+    <div style="display:flex;justify-content:space-between;margin-bottom:8px;"><strong>💾 Import Private JSON</strong><button onclick="document.getElementById('jBox').style.display='none'">✕</button></div>
+    <input type="file" accept=".json,application/json" onchange="impJson(this.files)" style="width:100%;">
   </div>
 </div>
-
 <div id="sBox" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:2500;align-items:center;justify-content:center;padding:12px;">
   <div style="background:#fff;border-radius:12px;max-width:460px;width:100%;max-height:85vh;overflow-y:auto;padding:16px;font-family:sans-serif;">
     <div style="display:flex;justify-content:space-between;margin-bottom:8px;"><strong>📷 Guidebook Scanner</strong><button onclick="document.getElementById('sBox').style.display='none'">✕</button></div>
-    <div style="display:flex;gap:6px;margin-bottom:8px;"><input id="gK" type="password" placeholder="Gemini API Key" style="flex:1;padding:6px;border:1px solid #ccc;border-radius:6px;"><button onclick="localStorage.setItem('gk',document.getElementById('gK').value.trim());alert('Saved')">Save</button></div>
+    <div style="display:flex;gap:6px;margin-bottom:8px;">
+      <input id="gK" type="password" placeholder="Gemini API Key" style="flex:1;padding:6px;border:1px solid #ccc;border-radius:6px;">
+      <button onclick="localStorage.setItem('gk',document.getElementById('gK').value.trim());alert('Saved!')">Save</button>
+      <button onclick="testGk()" style="background:#0284c7;color:#fff;border:none;border-radius:6px;padding:6px 10px;font-weight:700;cursor:pointer;">Test</button>
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
       <label style="padding:9px;background:#0f172a;color:#fff;border-radius:8px;font-size:12px;font-weight:700;text-align:center;cursor:pointer;">📸 Snap Page<input type="file" accept="image/*" capture="environment" style="display:none" onchange="qPg(this.files)"></label>
       <label style="padding:9px;background:#f1f5f9;border:1px solid #ccc;border-radius:8px;font-size:12px;font-weight:700;text-align:center;cursor:pointer;">🖼️ Gallery<input type="file" accept="image/*" multiple style="display:none" onchange="qPg(this.files)"></label>
     </div>
-    <div id="qInf" style="font-size:12px;font-weight:700;color:#2563eb;margin-bottom:8px;">0 pages queued</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <span id="qInf" style="font-size:12px;font-weight:700;color:#2563eb;">0 pages queued</span>
+      <button onclick="window.pgs=[];document.getElementById('qInf').textContent='0 pages queued';" style="font-size:11px;border:1px solid #ccc;border-radius:5px;padding:2px 7px;cursor:pointer;">Clear</button>
+    </div>
     <button onclick="runSc()" style="width:100%;padding:10px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;">✨ Extract Boulders</button>
     <pre id="sOut" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px;font-size:11px;max-height:180px;overflow:auto;margin-top:8px;white-space:pre-wrap;"></pre>
+    <button id="addExBtn" onclick="addEx()" style="display:none;width:100%;margin-top:8px;padding:10px;background:#2563eb;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;">✅ Add Extracted Boulders to Map</button>
   </div>
 </div>
-
 <script>
-document.getElementById('gK').value = localStorage.getItem('gk') || '';
+document.getElementById('gK').value = localStorage.getItem('gk') || localStorage.getItem('v28_gemini_key') || '';
 window.pgs = [];
 window.qPg = async function(fl) {
-  for (const f of Array.from(fl||[])) {
-    const b = await new Promise(res => { const r = new FileReader(); r.onload = () => { const im = new Image(); im.onload = () => { const s = Math.min(1, 1000/Math.max(im.width,im.height)); const c = document.createElement('canvas'); c.width=im.width*s; c.height=im.height*s; c.getContext('2d').drawImage(im,0,0,c.width,c.height); res(c.toDataURL('image/jpeg',0.72).slice(23)); }; im.src=r.result; }; r.readAsDataURL(f); });
-    window.pgs.push(b);
+  for (const f of Array.from(fl || [])) {
+    const b64 = await new Promise(res => {
+      const r = new FileReader();
+      r.onload = () => {
+        const im = new Image();
+        im.onload = () => {
+          const sc = Math.min(1, 1000 / Math.max(im.width, im.height));
+          const c = document.createElement('canvas'); c.width = Math.round(im.width * sc); c.height = Math.round(im.height * sc);
+          c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+          res(c.toDataURL('image/jpeg', 0.72).slice(23));
+        };
+        im.src = r.result;
+      };
+      r.readAsDataURL(f);
+    });
+    window.pgs.push(b64);
   }
   document.getElementById('qInf').textContent = window.pgs.length + ' page(s) queued';
 };
+window.testGk = async function() {
+  const k = document.getElementById('gK').value.trim(), out = document.getElementById('sOut');
+  if (!k) return alert('Paste API key first.');
+  out.textContent = 'Testing...';
+  try {
+    const h = ['generativelanguage', 'googleapis', 'com'].join('.');
+    const r = await fetch('https://' + h + '/v1beta/models?key=' + encodeURIComponent(k));
+    const j = await r.json();
+    out.textContent = r.ok ? '✅ API Key works!' : ('Error ' + r.status + ': ' + (j.error && j.error.message));
+  } catch (e) { out.textContent = 'Network error: ' + e.message; }
+};
 window.runSc = async function() {
   const k = document.getElementById('gK').value.trim(), out = document.getElementById('sOut');
-  if (!k || !window.pgs.length) return alert('Add API key and at least 1 photo.');
+  if (!k) return alert('Enter API key first.');
+  if (!window.pgs.length) return alert('Snap or select at least 1 photo first.');
   out.textContent = '⏳ Extracting ' + window.pgs.length + ' page(s)...';
-  const h = ['generativelanguage','googleapis','com'].join('.');
-  const r = await fetch('https://' + h + '/v1beta/models/gemini-3.8-flash-lite:generateContent?key=' + encodeURIComponent(k), {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ contents: [{ parts: [{ text: 'Extract boulders, problems, grades, coordinates, and sector borders as valid JSON: {"boulders":[{"area":"","sector":"","name":"","lat":null,"lon":null,"problems":[{"name":"","grade":"","desc":""}]}]}' }, ...window.pgs.map(d => ({ inline_data: { mime_type: 'image/jpeg', data: d } }))] }], generationConfig: { responseMimeType: 'application/json' } })
-  });
-  const j = await r.json();
-  out.textContent = j.candidates?.?.content?.parts?.?.text || JSON.stringify(j, null, 2);
+  try {
+    const h = ['generativelanguage', 'googleapis', 'com'].join('.');
+    const prompt = 'Extract boulders, problems, grades, GPS coordinates, and sector borders as valid JSON: {"boulders":[{"area":"","sector":"","name":"","lat":null,"lon":null,"problems":[{"name":"","grade":"","desc":""}]}]}';
+    const parts = [{ text: prompt }].concat(window.pgs.map(d => ({ inline_data: { mime_type: 'image/jpeg', data: d } })));
+    const r = await fetch('https://' + h + '/v1beta/models/gemini-3.8-flash-lite:generateContent?key=' + encodeURIComponent(k), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: parts }], generationConfig: { responseMimeType: 'application/json' } })
+    });
+    const j = await r.json();
+    if (!r.ok) { out.textContent = 'HTTP ' + r.status + ': ' + ((j.error && j.error.message) || JSON.stringify(j)); return; }
+    const cand = j.candidates && j.candidates.at(0);
+    const part = cand && cand.content && cand.content.parts && cand.content.parts.at(0);
+    const txt = (part && part.text) || '{}';
+    out.textContent = txt;
+    window.exData = JSON.parse(txt);
+    document.getElementById('addExBtn').style.display = 'block';
+  } catch (e) { out.textContent = 'Error: ' + e.message; }
 };
-window.impJson = async function(fl) {
-  if (!fl || !fl) return;
-  const data = JSON.parse(await fl.text());
+window.addEx = function() {
+  const list = (window.exData && window.exData.boulders) || [];
+  if (!list.length) return alert('No boulders in extracted JSON.');
   const csvEl = document.getElementById('csv-data');
-  const esc = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  const esc = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
   let rows = '';
-  (data.boulders || []).forEach(b => {
-    (b.problems && b.problems.length ? b.problems : [{name:'',grade:''}]).forEach(p => {
-      rows += '\n' + ['boulder', b.area||'Malveira', b.sector||'', b.name||'', p.name||'', p.grade||'', b.lat??'', b.lon??'', b.estimated?'true':'false', b.description||'', b.comments||'', b.topo_url||'', b.image_url||''].map(esc).join(',');
+  list.forEach((b, i) => {
+    const b64 = window.pgs.at(i);
+    const img = b64 ? ('data:image/jpeg;base64,' + b64) : '';
+    (b.problems && b.problems.length ? b.problems : [{ name: '', grade: '' }]).forEach(p => {
+      rows += '\n' + ['boulder', b.area || 'Sintra', b.sector || 'Scanned', b.name || 'Boulder', p.name || '', p.grade || '', b.lat == null ? '' : b.lat, b.lon == null ? '' : b.lon, b.lat == null ? 'true' : 'false', '', b.comments || '', '', img].map(esc).join(',');
     });
   });
-  (data.parkings || []).forEach(p => {
-    rows += '\n' + ['parking', p.area||'Malveira', p.sector||'', p.name||'Parking', '', '', p.lat, p.lon, 'false', p.description||'', '', p.topo_url||'', ''].map(esc).join(',');
+  if (csvEl) csvEl.textContent += rows;
+  alert('Added ' + list.length + ' boulders! Click "Download Backup HTML" in the sidebar to save.');
+  document.getElementById('sBox').style.display = 'none';
+};
+window.impJson = async function(fl) {
+  const file = fl && fl.item(0);
+  if (!file) return;
+  const data = JSON.parse(await file.text());
+  const csvEl = document.getElementById('csv-data');
+  const esc = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  let rows = '';
+  (data.boulders || []).forEach(b => {
+    (b.problems && b.problems.length ? b.problems : [{ name: '', grade: '' }]).forEach(p => {
+      rows += '\n' + ['boulder', b.area || 'Malveira', b.sector || '', b.name || '', p.name || '', p.grade || '', b.lat == null ? '' : b.lat, b.lon == null ? '' : b.lon, b.estimated ? 'true' : 'false', b.description || '', b.comments || '', b.topo_url || '', b.image_url || ''].map(esc).join(',');
+    });
   });
   if (csvEl) csvEl.textContent += rows;
-  alert('Loaded ' + (data.boulders||[]).length + ' boulders! Click "Download Backup HTML" in the sidebar to save offline.');
+  alert('Loaded ' + (data.boulders || []).length + ' boulders! Click "Download Backup HTML" in the sidebar to save.');
   document.getElementById('jBox').style.display = 'none';
 };
 </script>

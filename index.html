@@ -4631,51 +4631,3057 @@ type,area,sector,name,problem_name,grade,latitude,longitude,estimated,descriptio
 .qs-tag{font-size:10px;font-weight:800;padding:2px 6px;border-radius:999px;text-transform:uppercase;flex-shrink:0}
 </style>
 <div id="quickSearchBox"><input id="quickSearchInput" type="text" placeholder="Search area, sector, boulder..." autocomplete="off"/><button id="quickSearchClear" type="button">✕</button><div id="quickSearchResults"></div></div>
+</body></html>
+<script>
+    (function () {
+      // Uppercase Grade Canonical Normalizer
+      function normalizeGrade(g) {
+        let str = String(g || "").trim();
+        if (!str || str === "?" || str === "-") return "?";
+        if (/^proj/i.test(str)) return "PROJ.";
+        return str
+          .toUpperCase()
+          .replace(/\s+/g, "")
+          .replace(/([0-9]+)([A-C])/g, "$1$2");
+      }
 
-<div style="position:fixed;bottom:14px;left:50%;transform:translateX(-50%);z-index:1500;background:#0f172a;padding:7px 14px;border-radius:999px;box-shadow:0 4px 16px rgba(0,0,0,.35);">
-  <button onclick="document.getElementById('scanBox').style.display='flex'" style="background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;border:none;border-radius:999px;padding:6px 14px;font-size:12px;font-weight:700;cursor:pointer;">📷 Scan Guidebook (AI)</button>
+      function gradeCategory(grade) {
+        const g = normalizeGrade(grade);
+        if (g === "?" || g === "PROJ." || g === "-") return "PROJ";
+        if (["III", "IV", "V", "V+"].includes(g) || /^[345]/.test(g)) return "EASY";
+        if (g.startsWith("6")) return "SIX";
+        if (g.startsWith("7")) return "SEVEN";
+        if (g.startsWith("8")) return "EIGHT";
+        return "PROJ";
+      }
+
+      function gradeColor(grade) {
+        const cat = gradeCategory(grade);
+        if (cat === "EASY") return "#22c55e"; // Green (<6A)
+        if (cat === "SIX") return "#3b82f6";  // Blue (6A-6C+)
+        if (cat === "SEVEN") return "#9333ea";// Purple (7A-7C+)
+        if (cat === "EIGHT") return "#18181b";// Black (8A+)
+        return "#64748b";                     // Gray (PROJ / ?)
+      }
+
+      function gradeClass(grade) {
+        const cat = gradeCategory(grade);
+        if (cat === "EASY") return "g-easy";
+        if (cat === "SIX") return "g-mid";
+        if (cat === "SEVEN") return "g-hard";
+        if (cat === "EIGHT") return "g-vhard";
+        return "g-proj";
+      }
+
+      const GRADE_ORDER = [
+        "III", "IV", "V", "V+",
+        "6A", "6A+", "6B", "6B+", "6C", "6C+",
+        "7A", "7A+", "7B", "7B+", "7C", "7C+",
+        "8A", "8A+", "8B", "8B+", "8C",
+        "PROJ."
+      ];
+
+      function escapeHtml(str) {
+        return String(str ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      // RFC-4180 CSV parser
+      function parseCSV(text) {
+        const rows = [];
+        let row = [];
+        let val = "";
+        let inQuotes = false;
+        for (let i = 0; i < text.length; i++) {
+          const ch = text[i];
+          const next = text[i + 1];
+          if (inQuotes) {
+            if (ch === '"' && next === '"') {
+              val += '"';
+              i++;
+            } else if (ch === '"') {
+              inQuotes = false;
+            } else {
+              val += ch;
+            }
+          } else {
+            if (ch === '"') {
+              inQuotes = true;
+            } else if (ch === ",") {
+              row.push(val.trim());
+              val = "";
+            } else if (ch === "\n") {
+              row.push(val.trim());
+              if (row.some(cell => cell !== "")) rows.push(row);
+              row = [];
+              val = "";
+            } else if (ch !== "\r") {
+              val += ch;
+            }
+          }
+        }
+        if (val !== "" || row.length > 0) {
+          row.push(val.trim());
+          if (row.some(cell => cell !== "")) rows.push(row);
+        }
+        const headers = rows[0];
+        return rows.slice(1).map(cols => {
+          const obj = {};
+          headers.forEach((h, idx) => {
+            obj[h] = cols[idx] ?? "";
+          });
+          return obj;
+        });
+      }
+
+      function gradeMatchesFilter(grade, filterVal) {
+        if (filterVal === "ALL") return true;
+        const g = normalizeGrade(grade);
+        const cat = gradeCategory(g);
+        if (filterVal === "BRACKET_EASY") return cat === "EASY";
+        if (filterVal === "BRACKET_6") return cat === "SIX";
+        if (filterVal === "BRACKET_7") return cat === "SEVEN";
+        if (filterVal === "BRACKET_8") return cat === "EIGHT";
+        return g.toUpperCase() === filterVal.toUpperCase();
+      }
+
+      function inferArea(sector, explicitArea) {
+        if (explicitArea && explicitArea.trim()) return explicitArea.trim();
+        const s = (sector || "").toLowerCase();
+        if (s.includes("cabo") || s.includes("adraga") || s.includes("aroeira") || s.includes("abano") || s.includes("biscaia") || s.includes("cavalo") || s.includes("louriçal") || s.includes("pedra da azoia")) {
+          return "Cabo da Roca";
+        }
+        if (s.includes("coast") || s.includes("assafora") || s.includes("samarra")) {
+          return "Coast";
+        }
+        return "Malveira";
+      }
+
+      // Parse embedded CSV
+      const rawCsv = document.getElementById("csv-data").textContent;
+      const records = parseCSV(rawCsv);
+
+      const boulderMap = new Map();
+      const parkingMap = new Map();
+      const areasSet = new Set();
+      const sectorsSet = new Set();
+      const gradesSet = new Set();
+
+      function ingestRecord(r) {
+        const area = inferArea(r.sector, r.area);
+        if (area) areasSet.add(area);
+        if (r.sector) sectorsSet.add(r.sector);
+
+        if (r.type === "boulder") {
+          const normG = normalizeGrade(r.grade);
+          if (normG && normG !== "?") gradesSet.add(normG);
+          const key = `${r.sector}||${r.name}`;
+          if (!boulderMap.has(key)) {
+            const lat = parseFloat(r.latitude);
+            const lon = parseFloat(r.longitude);
+            boulderMap.set(key, {
+              type: "boulder",
+              area,
+              sector: r.sector,
+              name: r.name,
+              lat: Number.isFinite(lat) ? lat : null,
+              lon: Number.isFinite(lon) ? lon : null,
+              estimated: r.estimated === "true",
+              image_url: "",
+              baseKey: r.baseKey || key,
+              topo_url: r.topo_url || "",
+              description: r.description || "",
+              comments: r.comments || "",
+              isCustom: Boolean(r.isCustom),
+              imageUrls: new Set(),
+              problems: []
+            });
+          }
+          const b = boulderMap.get(key);
+          if (r.area) b.area = r.area;
+          if (r.estimated === "true") b.estimated = true;
+          if (r.topo_url && !b.topo_url) b.topo_url = r.topo_url;
+          if (r.description && !b.description) b.description = r.description;
+          if (r.image_url) {
+            r.image_url
+              .split(/\s*\|\s*|\s+/)
+              .map(s => s.trim())
+              .filter(Boolean)
+              .forEach(u => {
+                if (!b.image_url) b.image_url = u;
+                b.imageUrls.add(u);
+              });
+          }
+          if (Array.isArray(r.extra_image_urls)) {
+            r.extra_image_urls.forEach(u => {
+              if (u) {
+                if (!b.image_url) b.image_url = u;
+                b.imageUrls.add(u);
+              }
+            });
+          }
+          b.problems.push({
+            name: r.problem_name || "?",
+            grade: normG,
+            desc: r.problem_desc || ""
+          });
+        } else if (r.type === "parking") {
+          const lat = parseFloat(r.latitude);
+          const lon = parseFloat(r.longitude);
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+          const key = `${lat.toFixed(6)},${lon.toFixed(6)}`;
+          if (!parkingMap.has(key)) {
+            parkingMap.set(key, {
+              type: "parking",
+              lat,
+              lon,
+              names: new Set(),
+              areas: new Set(),
+              sectors: new Set(),
+              topo_url: r.topo_url || "",
+              description: r.description || ""
+            });
+          }
+          const p = parkingMap.get(key);
+          if (r.name) p.names.add(r.name);
+          if (area) p.areas.add(area);
+          if (r.sector) p.sectors.add(r.sector);
+          if (r.topo_url && !p.topo_url) p.topo_url = r.topo_url;
+          if (r.description && !p.description) p.description = r.description;
+        }
+      }
+
+      records.forEach(ingestRecord);
+
+      let boulders = [];
+      let parkings = [];
+
+      function refreshCollections() {
+        boulders = Array.from(boulderMap.values());
+        parkings = Array.from(parkingMap.values());
+
+        // Offset identical coordinates slightly for clean pin visibility
+        const coordBuckets = new Map();
+        boulders.forEach(b => {
+          if (b.lat === null || b.lon === null) return;
+          const cKey = `${b.lat.toFixed(6)},${b.lon.toFixed(6)}`;
+          if (!coordBuckets.has(cKey)) coordBuckets.set(cKey, []);
+          coordBuckets.get(cKey).push(b);
+        });
+        coordBuckets.forEach(group => {
+          if (group.length > 1) {
+            group.forEach((b, idx) => {
+              const angle = (2 * Math.PI * idx) / group.length;
+              b.displayLat = b.lat + Math.sin(angle) * 0.00004;
+              b.displayLon = b.lon + Math.cos(angle) * 0.00005;
+            });
+          } else {
+            group[0].displayLat = group[0].lat;
+            group[0].displayLon = group[0].lon;
+          }
+        });
+      }
+
+      const areaSelect = document.getElementById("areaFilter");
+      const sectorSelect = document.getElementById("sectorFilter");
+      const exactGradeGroup = document.getElementById("exactGradeGroup");
+
+      function populateDropdowns() {
+        const prevArea = areaSelect.value || "ALL";
+        const prevSector = sectorSelect.value || "ALL";
+        const prevGrade = document.getElementById("gradeFilter") ? document.getElementById("gradeFilter").value : "ALL";
+
+        areaSelect.innerHTML = '<option value="ALL">All Areas</option>';
+        ["Malveira", "Cabo da Roca", "Coast"].forEach(a => {
+          const opt = document.createElement("option");
+          opt.value = a;
+          opt.textContent = a;
+          areaSelect.appendChild(opt);
+        });
+        Array.from(areasSet).forEach(a => {
+          if (!["Malveira", "Cabo da Roca", "Coast"].includes(a)) {
+            const opt = document.createElement("option");
+            opt.value = a;
+            opt.textContent = a;
+            areaSelect.appendChild(opt);
+          }
+        });
+        if (Array.from(areasSet).includes(prevArea) || prevArea === "ALL") {
+          areaSelect.value = prevArea;
+        }
+
+        sectorSelect.innerHTML = '<option value="ALL">All Sectors</option>';
+        Array.from(sectorsSet).sort().forEach(sec => {
+          const opt = document.createElement("option");
+          opt.value = sec;
+          opt.textContent = sec;
+          sectorSelect.appendChild(opt);
+        });
+        if (Array.from(sectorsSet).includes(prevSector) || prevSector === "ALL") {
+          sectorSelect.value = prevSector;
+        }
+
+        exactGradeGroup.innerHTML = "";
+        const gradeOrderUpper = GRADE_ORDER.map(x => x.toUpperCase());
+        Array.from(gradesSet)
+          .sort((a, b) => {
+            const ia = gradeOrderUpper.indexOf(a);
+            const ib = gradeOrderUpper.indexOf(b);
+            if (ia !== -1 && ib !== -1) return ia - ib;
+            if (ia !== -1) return -1;
+            if (ib !== -1) return 1;
+            return a.localeCompare(b);
+          })
+          .forEach(g => {
+            const opt = document.createElement("option");
+            opt.value = g;
+            opt.textContent = g;
+            exactGradeGroup.appendChild(opt);
+          });
+        if (document.getElementById("gradeFilter")) {
+          document.getElementById("gradeFilter").value = prevGrade;
+        }
+
+        document.getElementById("areaSuggestions").innerHTML = Array.from(areasSet)
+          .map(a => `<option value="${escapeHtml(a)}"></option>`)
+          .join("");
+        document.getElementById("sectorSuggestions").innerHTML = Array.from(sectorsSet)
+          .map(s => `<option value="${escapeHtml(s)}"></option>`)
+          .join("");
+      }
+
+      // KML Parser with support for multiple <img src="..."> in description
+      function stripHtmlTags(htmlText) {
+        if (!htmlText) return "";
+        const tmp = document.createElement("div");
+        tmp.innerHTML = htmlText;
+        return (tmp.textContent || tmp.innerText || "").replace(/\s+/g, " ").trim();
+      }
+
+      function parseAndMergeKml(kmlText, defaultGroup = "Coast") {
+        if (!kmlText || !kmlText.trim()) return { bouldersAdded: 0, parkingsAdded: 0 };
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(kmlText, "application/xml");
+        if (xmlDoc.querySelector("parsererror")) {
+          throw new Error("Invalid KML XML format");
+        }
+
+        const placemarks = Array.from(xmlDoc.getElementsByTagName("Placemark"));
+        let bouldersAdded = 0;
+        let parkingsAdded = 0;
+
+        placemarks.forEach(pm => {
+          const pointEl = pm.getElementsByTagName("Point")[0];
+          if (!pointEl) return;
+          const coordText = (pointEl.getElementsByTagName("coordinates")[0]?.textContent || "").trim();
+          if (!coordText) return;
+          const parts = coordText.split(",").map(s => parseFloat(s.trim()));
+          const lon = parts[0];
+          const lat = parts[1];
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+          const name = (pm.getElementsByTagName("name")[0]?.textContent || "Unnamed Pin").trim();
+          const rawDesc = pm.getElementsByTagName("description")[0]?.textContent || "";
+          const extractedUrls = [];
+          const seenUrls = new Set();
+          function pushImageUrl(u) {
+            const clean = (u || "").trim();
+            if (!clean || !/^https?:\/\//i.test(clean)) return;
+            if (clean.includes("gstatic.com/mapspro/images/stock/")) return;
+            if (!seenUrls.has(clean)) {
+              seenUrls.add(clean);
+              extractedUrls.push(clean);
+            }
+          }
+
+          if (rawDesc) {
+            const imgAttrRegex = /<img[^>]+src=["'](https?:\/\/[^"']+)["']/gi;
+            let match;
+            while ((match = imgAttrRegex.exec(rawDesc)) !== null) {
+              pushImageUrl(match[1]);
+            }
+          }
+
+          Array.from(pm.getElementsByTagName("Data")).forEach(dataEl => {
+            if (dataEl.getAttribute("name") === "gx_media_links") {
+              const val = dataEl.getElementsByTagName("value")[0]?.textContent || "";
+              const urlMatches = val.match(/https?:\/\/[^\s"'<>]+/gi) || [];
+              urlMatches.forEach(pushImageUrl);
+            }
+          });
+
+          const desc = stripHtmlTags(rawDesc);
+          const folderNames = [];
+          let parent = pm.parentElement;
+          while (parent) {
+            if (parent.tagName === "Folder") {
+              const nameEl = Array.from(parent.children).find(el => el.tagName === "name");
+              const fName = nameEl ? nameEl.textContent.trim() : "";
+              if (fName) folderNames.unshift(fName);
+            }
+            parent = parent.parentElement;
+          }
+          const folderLabel = folderNames.join(" / ");
+          const sectorName = folderLabel
+            ? (folderLabel.toLowerCase().includes(defaultGroup.toLowerCase()) ? folderLabel : `${defaultGroup} — ${folderLabel}`)
+            : defaultGroup;
+
+          const lowerCheck = `${name} ${folderLabel}`.toLowerCase();
+          const isParking = /\b(parking|estacionamento|park|car\s*park)\b/i.test(lowerCheck);
+
+          if (isParking) {
+            ingestRecord({
+              type: "parking",
+              area: "Coast",
+              sector: sectorName,
+              name,
+              latitude: String(lat),
+              longitude: String(lon),
+              description: desc
+            });
+            parkingsAdded++;
+          } else {
+            // Check if boulder exists already by coordinates to attach images without duplicating
+            let matched = false;
+            boulderMap.forEach(b => {
+              if (b.lat !== null && b.lon !== null && Math.abs(b.lat - lat) < 0.00008 && Math.abs(b.lon - lon) < 0.00008) {
+                extractedUrls.forEach(u => {
+                  if (!b.image_url) b.image_url = u;
+                  b.imageUrls.add(u);
+                });
+                matched = true;
+              }
+            });
+            if (!matched) {
+              ingestRecord({
+                type: "boulder",
+                area: "Coast",
+                sector: sectorName,
+                name,
+                problem_name: name,
+                grade: "?",
+                latitude: String(lat),
+                longitude: String(lon),
+                image_url: extractedUrls[0] || "",
+                extra_image_urls: extractedUrls,
+                estimated: "false",
+                description: desc
+              });
+              bouldersAdded++;
+            }
+          }
+        });
+
+        refreshCollections();
+        populateDropdowns();
+        return { bouldersAdded, parkingsAdded };
+      }
+
+      // LocalStorage + Baked State Persistence
+      const STORAGE_KEY = "sintra_map_edits_v2";
+      let customIdCounter = 0;
+
+      function loadBakedState() {
+        try {
+          const el = document.getElementById("baked-state-json");
+          if (!el || !el.textContent || !el.textContent.trim()) {
+            return { edits: {}, created: [], deleted: [], photos: {}, topos: {} };
+          }
+          const parsed = JSON.parse(el.textContent);
+          return {
+            edits: parsed && typeof parsed.edits === "object" && parsed.edits ? parsed.edits : {},
+            created: parsed && Array.isArray(parsed.created) ? parsed.created : [],
+            deleted: parsed && Array.isArray(parsed.deleted) ? parsed.deleted : [],
+            photos: parsed && typeof parsed.photos === "object" && parsed.photos ? parsed.photos : {},
+            topos: parsed && typeof parsed.topos === "object" && parsed.topos ? parsed.topos : {}
+          };
+        } catch (err) {
+          console.warn("Could not parse baked state JSON:", err);
+          return { edits: {}, created: [], deleted: [], photos: {}, topos: {} };
+        }
+      }
+
+      const bakedState = loadBakedState();
+
+      function loadSavedStore() {
+        try {
+          const raw = window.localStorage ? window.localStorage.getItem(STORAGE_KEY) : null;
+          if (!raw) {
+            return {
+              edits: Object.assign({}, bakedState.edits),
+              created: bakedState.created.slice(),
+              deleted: bakedState.deleted.slice()
+            };
+          }
+          const parsed = JSON.parse(raw);
+          const localEdits = parsed && typeof parsed.edits === "object" && parsed.edits ? parsed.edits : {};
+          const localCreated = parsed && Array.isArray(parsed.created) ? parsed.created : [];
+          const localDeleted = parsed && Array.isArray(parsed.deleted) ? parsed.deleted : [];
+
+          const mergedCreatedMap = new Map();
+          bakedState.created.forEach(item => {
+            if (item && (item.baseKey || item.id)) mergedCreatedMap.set(item.baseKey || item.id, item);
+          });
+          localCreated.forEach(item => {
+            if (item && (item.baseKey || item.id)) mergedCreatedMap.set(item.baseKey || item.id, item);
+          });
+
+          const mergedDeleted = Array.from(new Set([...bakedState.deleted, ...localDeleted]));
+
+          return {
+            edits: Object.assign({}, bakedState.edits, localEdits),
+            created: Array.from(mergedCreatedMap.values()),
+            deleted: mergedDeleted
+          };
+        } catch (err) {
+          console.warn("Could not read saved edits from localStorage:", err);
+          return {
+            edits: Object.assign({}, bakedState.edits),
+            created: bakedState.created.slice(),
+            deleted: bakedState.deleted.slice()
+          };
+        }
+      }
+
+      const savedStore = loadSavedStore();
+
+      function persistSavedStore() {
+        try {
+          if (window.localStorage) {
+            window.localStorage.setItem(STORAGE_KEY, JSON.stringify(savedStore));
+          }
+        } catch (err) {
+          console.warn("Could not save edits to localStorage:", err);
+        }
+      }
+
+      function applySavedStoreToMap() {
+        // Delete boulders marked deleted
+        (savedStore.deleted || []).forEach(k => {
+          boulderMap.delete(k);
+        });
+
+        // Apply edits
+        Object.entries(savedStore.edits).forEach(([baseKey, edit]) => {
+          const b = boulderMap.get(baseKey);
+          if (!b || !edit || typeof edit !== "object") return;
+          if (typeof edit.name === "string" && edit.name.trim()) b.name = edit.name.trim();
+          if (typeof edit.area === "string" && edit.area.trim()) b.area = edit.area.trim();
+          if (typeof edit.sector === "string" && edit.sector.trim()) b.sector = edit.sector.trim();
+          if (typeof edit.comments === "string") b.comments = edit.comments;
+          if (Number.isFinite(edit.lat) && Number.isFinite(edit.lon)) {
+            b.lat = edit.lat;
+            b.lon = edit.lon;
+            b.estimated = false;
+          }
+          if (Array.isArray(edit.problems)) {
+            b.problems = edit.problems.map(p => {
+              const normG = normalizeGrade((p && p.grade) || "");
+              if (normG && normG !== "?") gradesSet.add(normG);
+              return {
+                name: String((p && p.name) || "?").trim() || "?",
+                grade: normG,
+                desc: String((p && p.desc) || "").trim()
+              };
+            });
+          }
+        });
+
+        // Add custom created boulders
+        savedStore.created.forEach(item => {
+          if (!item || !item.name || !item.sector) return;
+          const bKey = item.baseKey || item.id || `custom_${Date.now()}_${++customIdCounter}`;
+          if (savedStore.deleted.includes(bKey)) return;
+          const lat = parseFloat(item.lat);
+          const lon = parseFloat(item.lon);
+          const area = inferArea(item.sector, item.area);
+          if (area) areasSet.add(area);
+          if (item.sector) sectorsSet.add(item.sector);
+          const probs = Array.isArray(item.problems)
+            ? item.problems.map(p => {
+                const normG = normalizeGrade((p && p.grade) || "");
+                if (normG && normG !== "?") gradesSet.add(normG);
+                return {
+                  name: String((p && p.name) || "?").trim() || "?",
+                  grade: normG,
+                  desc: String((p && p.desc) || "").trim()
+                };
+              })
+            : [];
+          boulderMap.set(bKey, {
+            type: "boulder",
+            baseKey: bKey,
+            area,
+            sector: item.sector,
+            name: item.name,
+            lat: Number.isFinite(lat) ? lat : null,
+            lon: Number.isFinite(lon) ? lon : null,
+            estimated: false,
+            isCustom: true,
+            image_url: item.image_url || "",
+            topo_url: "",
+            description: "",
+            comments: typeof item.comments === "string" ? item.comments : "",
+            imageUrls: new Set(item.image_url ? [item.image_url] : []),
+            problems: probs
+          });
+        });
+      }
+
+      applySavedStoreToMap();
+      refreshCollections();
+      populateDropdowns();
+
+      // IndexedDB Photos & Interactive SVG Topo Vectors
+      const DB_NAME = "sintra_boulder_app_db_v2";
+      const customPhotosMap = new Map();
+      const customToposMap = new Map(); // key -> array of vector problem objects
+
+      Object.entries(bakedState.photos || {}).forEach(([k, v]) => {
+        if (k && typeof v === "string" && v) customPhotosMap.set(k, v);
+      });
+      Object.entries(bakedState.topos || {}).forEach(([k, v]) => {
+        if (k && Array.isArray(v)) customToposMap.set(k, v);
+      });
+
+      function openAppDB() {
+        return new Promise((resolve, reject) => {
+          if (!window.indexedDB) return reject(new Error("IndexedDB not supported"));
+          let settled = false;
+          const timer = setTimeout(() => {
+            if (!settled) {
+              settled = true;
+              reject(new Error("IndexedDB timeout"));
+            }
+          }, 1500);
+          const req = window.indexedDB.open(DB_NAME, 1);
+          req.onupgradeneeded = e => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains("photos")) db.createObjectStore("photos", { keyPath: "id" });
+            if (!db.objectStoreNames.contains("topos")) db.createObjectStore("topos", { keyPath: "id" });
+          };
+          req.onsuccess = e => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(e.target.result);
+          };
+          req.onerror = e => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            reject(e.target.error || new Error("IndexedDB error"));
+          };
+        });
+      }
+
+      async function loadAllSavedStorage() {
+        try {
+          const db = await openAppDB();
+          await new Promise(res => {
+            const tx = db.transaction(["photos", "topos"], "readonly");
+            const pStore = tx.objectStore("photos");
+            const tStore = tx.objectStore("topos");
+            pStore.getAll().onsuccess = e => {
+              (e.target.result || []).forEach(r => {
+                if (r && r.id && r.dataUrl) customPhotosMap.set(r.id, r.dataUrl);
+              });
+            };
+            tStore.getAll().onsuccess = e => {
+              (e.target.result || []).forEach(r => {
+                if (r && r.id && r.topos) customToposMap.set(r.id, r.topos);
+              });
+            };
+            tx.oncomplete = () => res();
+            tx.onerror = () => res();
+          });
+        } catch (e) {
+          console.warn("Storage load warning:", e);
+        }
+      }
+
+      async function saveBoulderPhoto(bKey, dataUrl) {
+        customPhotosMap.set(bKey, dataUrl);
+        try {
+          const db = await openAppDB();
+          return new Promise((res, rej) => {
+            const tx = db.transaction("photos", "readwrite");
+            tx.objectStore("photos").put({ id: bKey, dataUrl, updatedAt: Date.now() });
+            tx.oncomplete = () => res();
+            tx.onerror = () => rej(tx.error);
+          });
+        } catch (_) {}
+      }
+
+      async function deleteBoulderPhoto(bKey) {
+        customPhotosMap.delete(bKey);
+        try {
+          const db = await openAppDB();
+          return new Promise((res, rej) => {
+            const tx = db.transaction("photos", "readwrite");
+            tx.objectStore("photos").delete(bKey);
+            tx.oncomplete = () => res();
+            tx.onerror = () => rej(tx.error);
+          });
+        } catch (_) {}
+      }
+
+      async function saveBoulderTopos(bKey, toposArray) {
+        customToposMap.set(bKey, toposArray);
+        try {
+          const db = await openAppDB();
+          return new Promise((res, rej) => {
+            const tx = db.transaction("topos", "readwrite");
+            tx.objectStore("topos").put({ id: bKey, topos: toposArray, updatedAt: Date.now() });
+            tx.oncomplete = () => res();
+            tx.onerror = () => rej(tx.error);
+          });
+        } catch (_) {}
+      }
+
+      function readAndResizePhoto(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onerror = () => reject(new Error("Failed to read file"));
+          reader.onload = ev => {
+            const rawDataUrl = String(ev.target.result || "");
+            const img = new Image();
+            img.onload = () => {
+              try {
+                const maxDim = 1200;
+                let w = img.naturalWidth || img.width;
+                let h = img.naturalHeight || img.height;
+                if (w > maxDim || h > maxDim) {
+                  const scale = maxDim / Math.max(w, h);
+                  w = Math.round(w * scale);
+                  h = Math.round(h * scale);
+                }
+                const canvas = document.createElement("canvas");
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext("2d");
+                if (!ctx) return resolve(rawDataUrl);
+                ctx.drawImage(img, 0, 0, w, h);
+                resolve(canvas.toDataURL("image/jpeg", 0.8));
+              } catch (_) {
+                resolve(rawDataUrl);
+              }
+            };
+            img.onerror = () => resolve(rawDataUrl);
+            img.src = rawDataUrl;
+          };
+          reader.readAsDataURL(file);
+        });
+      }
+
+      // Initialize Leaflet Map with 60FPS Performance Flags
+      const map = L.map("map", {
+        center: [38.7556, -9.4316],
+        zoom: 15,
+        maxZoom: 22,
+        preferCanvas: true,
+        markerZoomAnimation: false,
+        zoomControl: true
+      });
+
+      // Base Tile Layers (CartoDB Voyager as default)
+      const cartoVoyager = L.tileLayer(
+        "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+        {
+          maxNativeZoom: 19,
+          maxZoom: 22,
+          attribution: '&copy; <a href="https://carto.com/">CARTO</a>, &copy; OpenStreetMap contributors',
+          updateWhenIdle: true,
+          updateWhenZooming: false,
+          keepBuffer: 1
+        }
+      );
+
+      const openTopo = L.tileLayer(
+        "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+        {
+          maxNativeZoom: 17,
+          maxZoom: 22,
+          attribution: "&copy; OpenTopoMap, &copy; OpenStreetMap contributors",
+          updateWhenIdle: true,
+          updateWhenZooming: false,
+          keepBuffer: 1
+        }
+      );
+
+      const esriSat = L.tileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        {
+          maxNativeZoom: 19,
+          maxZoom: 22,
+          attribution: "Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics",
+          updateWhenIdle: true,
+          updateWhenZooming: false,
+          keepBuffer: 1
+        }
+      );
+
+      openTopo.addTo(map);
+
+      L.control.layers(
+        {
+          
+          "OpenTopoMap": openTopo,
+          "Esri Satellite": esriSat
+        },
+        null,
+        { position: "topright", collapsed: true }
+      ).addTo(map);
+
+      const boulderLayerGroup = L.layerGroup().addTo(map);
+      const parkingLayerGroup = L.layerGroup().addTo(map);
+      const areaLabelsLayerGroup = L.layerGroup().addTo(map);
+      const sectorLabelsLayerGroup = L.layerGroup().addTo(map);
+
+      // Lightbox Controls
+      const lightbox = document.getElementById("lightbox");
+      const lightboxImg = document.getElementById("lightboxImg");
+      const lightboxSvg = document.getElementById("lightboxSvg");
+      const lightboxCaption = document.getElementById("lightboxCaption");
+
+      window.openPhotoLightbox = function (imgSrc, caption, bKey) {
+        lightboxImg.src = imgSrc;
+        lightboxCaption.textContent = caption || "";
+        const topos = bKey ? customToposMap.get(bKey) : null;
+        if (topos && topos.length > 0) {
+          lightboxSvg.style.display = "block";
+          lightboxSvg.setAttribute("viewBox", "0 0 1000 1000");
+          lightboxSvg.innerHTML = renderVectorTopoMarkup(topos, null);
+        } else {
+          lightboxSvg.style.display = "none";
+          lightboxSvg.innerHTML = "";
+        }
+        lightbox.classList.add("open");
+      };
+
+      function closeLightbox() {
+        lightbox.classList.remove("open");
+        lightboxImg.removeAttribute("src");
+        lightboxSvg.innerHTML = "";
+      }
+
+      document.getElementById("lightboxClose").addEventListener("click", closeLightbox);
+      lightbox.addEventListener("click", e => {
+        if (e.target === lightbox || e.target === document.getElementById("lightboxStage")) closeLightbox();
+      });
+
+      // Area & Sector Stats Calculator & Grade Distribution Chart
+      function computeStats(filterFn) {
+        let bCount = 0;
+        let pCount = 0;
+        const counts = { EASY: 0, SIX: 0, SEVEN: 0, EIGHT: 0, PROJ: 0 };
+        boulders.forEach(b => {
+          if (!filterFn(b)) return;
+          bCount++;
+          b.problems.forEach(p => {
+            pCount++;
+            const cat = gradeCategory(p.grade);
+            counts[cat] = (counts[cat] || 0) + 1;
+          });
+        });
+        return { bCount, pCount, counts };
+      }
+
+      const statsModal = document.getElementById("statsModal");
+      const statsModalTitle = document.getElementById("statsModalTitle");
+      const statsModalBody = document.getElementById("statsModalBody");
+      document.getElementById("statsCloseBtn").addEventListener("click", () => statsModal.classList.remove("open"));
+      statsModal.addEventListener("click", e => {
+        if (e.target === statsModal) statsModal.classList.remove("open");
+      });
+
+      function openStatsModal(title, filterFn) {
+        const stats = computeStats(filterFn);
+        statsModalTitle.textContent = title;
+        const total = stats.pCount || 1;
+        const maxVal = Math.max(stats.counts.EASY, stats.counts.SIX, stats.counts.SEVEN, stats.counts.EIGHT, stats.counts.PROJ, 1);
+
+        const rows = [
+          { label: "< 6A (3–5C+)", key: "EASY", color: "#22c55e" },
+          { label: "6A – 6C+", key: "SIX", color: "#3b82f6" },
+          { label: "7A – 7C+", key: "SEVEN", color: "#9333ea" },
+          { label: "8A – 8C+", key: "EIGHT", color: "#18181b" },
+          { label: "Proj. / ?", key: "PROJ", color: "#64748b" }
+        ].map(r => {
+          const val = stats.counts[r.key] || 0;
+          const pct = Math.round((val / maxVal) * 100);
+          return `
+            <div class="chart-row">
+              <span class="chart-lbl">${r.label}</span>
+              <div class="chart-track">
+                <div class="chart-fill" style="width:${pct}%; background:${r.color};"></div>
+              </div>
+              <span class="chart-val">${val}</span>
+            </div>
+          `;
+        }).join("");
+
+        statsModalBody.innerHTML = `
+          <div class="stats-summary-grid">
+            <div class="stats-summary-card">
+              <span class="stats-summary-num">${stats.bCount}</span>
+              <span class="stats-summary-lbl">Boulders</span>
+            </div>
+            <div class="stats-summary-card">
+              <span class="stats-summary-num">${stats.pCount}</span>
+              <span class="stats-summary-lbl">Problems</span>
+            </div>
+          </div>
+          <div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;color:var(--muted);margin-top:6px;">Grade Distribution</div>
+          <div class="chart-rows">${rows}</div>
+        `;
+        statsModal.classList.add("open");
+      }
+
+      // Render Area and Sector Pill Badges on Map
+      function updateMapLabels() {
+        const zoom = map.getZoom();
+        areaLabelsLayerGroup.clearLayers();
+        sectorLabelsLayerGroup.clearLayers();
+
+        if (zoom >= 17) return; // Hidden at close zoom
+
+        // Zoom 10 - 13: Area Labels
+        if (zoom >= 10 && zoom <= 13) {
+          const areaCenters = new Map();
+          boulders.forEach(b => {
+            if (b.lat === null || b.lon === null || !b.area) return;
+            if (!areaCenters.has(b.area)) areaCenters.set(b.area, { lats: [], lons: [] });
+            areaCenters.get(b.area).lats.push(b.lat);
+            areaCenters.get(b.area).lons.push(b.lon);
+          });
+
+          areaCenters.forEach((coords, areaName) => {
+            const avgLat = coords.lats.reduce((a, c) => a + c, 0) / coords.lats.length;
+            const avgLon = coords.lons.reduce((a, c) => a + c, 0) / coords.lons.length;
+            const stats = computeStats(b => b.area === areaName);
+            const icon = L.divIcon({
+              className: "",
+              html: `<div class="map-pill-wrap"><div class="area-pill-badge">${escapeHtml(areaName)} <span class="area-pill-count">${stats.bCount}</span></div></div>`,
+              iconSize: [0, 0]
+            });
+            const m = L.marker([avgLat, avgLon], { icon, interactive: true, zIndexOffset: 700 });
+            m.on("click", () => openStatsModal(`Area: ${areaName}`, b => b.area === areaName));
+            m.addTo(areaLabelsLayerGroup);
+          });
+        }
+
+        // Zoom 14 - 16: Independent Sector Labels
+        if (zoom >= 14 && zoom <= 16) {
+          const sectorCenters = new Map();
+          boulders.forEach(b => {
+            if (b.lat === null || b.lon === null || !b.sector) return;
+            if (!sectorCenters.has(b.sector)) sectorCenters.set(b.sector, { lats: [], lons: [] });
+            sectorCenters.get(b.sector).lats.push(b.lat);
+            sectorCenters.get(b.sector).lons.push(b.lon);
+          });
+
+          sectorCenters.forEach((coords, secName) => {
+            const avgLat = coords.lats.reduce((a, c) => a + c, 0) / coords.lats.length;
+            const avgLon = coords.lons.reduce((a, c) => a + c, 0) / coords.lons.length;
+            const stats = computeStats(b => b.sector === secName);
+            const icon = L.divIcon({
+              className: "",
+              html: `<div class="map-pill-wrap"><div class="sector-pill-badge">${escapeHtml(secName)} <span class="sector-pill-count">${stats.bCount}</span></div></div>`,
+              iconSize: [0, 0]
+            });
+            const m = L.marker([avgLat, avgLon], { icon, interactive: true, zIndexOffset: 650 });
+            m.on("click", () => openStatsModal(`Sector: ${secName}`, b => b.sector === secName));
+            m.addTo(sectorLabelsLayerGroup);
+          });
+        }
+      }
+
+      map.on("zoomend", updateMapLabels);
+
+      // SVG Topo Rendering & Smoothing Math
+      function renderVectorTopoMarkup(topos, activeProblemIdx) {
+        if (!Array.isArray(topos) || topos.length === 0) return "";
+        return topos.map(topo => {
+          const isAct = activeProblemIdx !== null && activeProblemIdx !== undefined && topo.probIdx === activeProblemIdx;
+          const strokeColor = topo.color || "#ef4444";
+          const strokeWidth = (topo.width || 5) * 2;
+          const outlineWidth = strokeWidth + 4;
+          const isHighlightedClass = isAct ? " is-highlighted" : "";
+
+          let badgeHtml = "";
+          if (topo.badge && topo.badge.x !== undefined && topo.badge.y !== undefined) {
+            badgeHtml = `
+              <circle cx="${topo.badge.x}" cy="${topo.badge.y}" r="22" fill="#0f172a" stroke="#ffffff" stroke-width="3" />
+              <text x="${topo.badge.x}" y="${topo.badge.y + 7}" fill="#ffffff" font-size="19" font-weight="800" text-anchor="middle">${escapeHtml(topo.badge.text)}</text>
+            `;
+          }
+
+          let stampsHtml = "";
+          (topo.stamps || []).forEach(st => {
+            stampsHtml += `
+              <rect x="${st.x - 30}" y="${st.y - 18}" width="60" height="28" rx="6" fill="#0f172a" stroke="#fbbf24" stroke-width="2" />
+              <text x="${st.x}" y="${st.y + 2}" fill="#ffffff" font-size="14" font-weight="800" text-anchor="middle">${escapeHtml(st.text)}</text>
+            `;
+          });
+
+          return `
+            <g class="topo-svg-group${isHighlightedClass}" data-prob-idx="${topo.probIdx}">
+              <path class="topo-hit-path" d="${topo.d}" />
+              <path class="topo-outline-path" d="${topo.d}" stroke-width="${outlineWidth}" />
+              <path class="topo-visible-path" d="${topo.d}" stroke="${strokeColor}" stroke-width="${strokeWidth}" />
+              ${badgeHtml}
+              ${stampsHtml}
+            </g>
+          `;
+        }).join("");
+      }
+
+      function pointsToSmoothPathD(pts) {
+        if (!pts || pts.length === 0) return "";
+        if (pts.length === 1) return `M ${pts[0].x} ${pts[0].y} L ${pts[0].x + 0.1} ${pts[0].y + 0.1}`;
+        if (pts.length === 2) return `M ${pts[0].x} ${pts[0].y} L ${pts[1].x} ${pts[1].y}`;
+
+        let d = `M ${pts[0].x} ${pts[0].y}`;
+        for (let i = 1; i < pts.length - 1; i++) {
+          const xc = (pts[i].x + pts[i + 1].x) / 2;
+          const yc = (pts[i].y + pts[i + 1].y) / 2;
+          d += ` Q ${pts[i].x} ${pts[i].y}, ${xc} ${yc}`;
+        }
+        d += ` L ${pts[pts.length - 1].x} ${pts[pts.length - 1].y}`;
+        return d;
+      }
+
+      function buildBoulderPhotoStage(boulder) {
+        const boulderKey = `${boulder.sector}||${boulder.name}`;
+        const customPhoto = customPhotosMap.get(boulderKey);
+        const topos = customToposMap.get(boulderKey) || [];
+        const hasTopos = topos.length > 0;
+        const onlineUrls = Array.from(boulder.imageUrls || []).filter(Boolean);
+        const altText = `${escapeHtml(boulder.sector)} — ${escapeHtml(boulder.name)}`;
+
+        const urls = (customPhoto ? [customPhoto] : (boulder.image_url || "").split("|").map(u=>u.trim()).filter(Boolean)); let imageSrc = urls[0] || onlineUrls[0] || "";
+        let hasPhoto = Boolean(imageSrc);
+
+        let stageInner = "";
+        if (hasPhoto) {
+          stageInner = `
+            <div class="popup-photo-stage">
+              <img class="popup-boulder-img" src="${escapeHtml(imageSrc)}" alt="${altText}" referrerpolicy="no-referrer" onclick="window.openPhotoLightbox('${escapeHtml(imageSrc)}', '${escapeHtml(altText)}', '${escapeHtml(boulderKey)}')" />
+              <svg class="topo-svg-overlay${hasTopos ? "" : " no-topos"}" viewBox="0 0 1000 1000" preserveAspectRatio="none">
+                ${renderVectorTopoMarkup(topos, null)}
+              </svg>
+            </div>
+          `;
+        } else {
+          stageInner = `<div class="popup-photo-empty">No photo yet &mdash; take or upload a field photo below.</div>`;
+        }
+
+        const drawBtnHtml = hasPhoto
+          ? `<button type="button" class="popup-draw-btn" data-boulder-key="${escapeHtml(boulderKey)}">&#9999;&#65039; Draw Line</button>`
+          : "";
+
+        return `
+          <div class="popup-thumb-wrap" data-boulder-key="${escapeHtml(boulderKey)}">
+            <div class="popup-thumb-label">${customPhoto ? "Field Photo (Saved on Device)" : "Boulder Photo / Topo"}</div>
+            <div class="popup-photo-stage-wrap">
+              ${stageInner}
+            </div>
+            <div class="popup-photo-actions">
+              <div class="popup-photo-btn-group">
+                <label class="popup-photo-btn">
+                  &#128247; Add / Replace Photo
+                  <input type="file" accept="image/*" class="popup-photo-input" data-boulder-key="${escapeHtml(boulderKey)}" />
+                </label>
+                ${drawBtnHtml}
+              </div>
+              <button type="button" class="popup-reset-photo" data-boulder-key="${escapeHtml(boulderKey)}" style="display:${customPhoto ? "inline-block" : "none"};">
+                Reset Photo
+              </button>
+            </div>
+          </div>
+        `;
+      }
+
+      function buildBoulderPopup(boulder, gradeVal, searchVal) {
+        const gMapsUrl = `https://www.google.com/maps/search/?api=1&query=${boulder.lat},${boulder.lon}`;
+        const estTag = boulder.estimated ? ' <span class="est-label">(Estimated)</span>' : '';
+        const descHtml = boulder.description
+          ? `<div class="popup-description">${escapeHtml(boulder.description)}</div>`
+          : '';
+        const topoLabel = boulder.topo_url && boulder.topo_url.includes("cabodaroca.pt")
+          ? "View Sector Topo on cabodaroca.pt &nearr;"
+          : "View Sector Topo &nearr;";
+        const topoHtml = boulder.topo_url
+          ? `<div class="popup-topo-wrap"><a class="popup-topo-link" href="${escapeHtml(boulder.topo_url)}" target="_blank" rel="noopener">${topoLabel}</a></div>`
+          : '';
+
+        const problemItems = boulder.problems
+          .map((p, idx) => {
+            const gMatch = gradeMatchesFilter(p.grade, gradeVal);
+            const sMatch = !searchVal || p.name.toLowerCase().includes(searchVal);
+            const isHighlighted = (gradeVal !== "ALL" || searchVal !== "") && gMatch && sMatch;
+            const desc = p.desc ? `<div class="problem-item-desc">${escapeHtml(p.desc)}</div>` : "";
+            return `
+              <li class="problem-item ${isHighlighted ? "highlighted" : ""}" data-prob-idx="${idx}">
+                <div class="problem-item-row">
+                  <span><strong>${idx + 1}.</strong> ${escapeHtml(p.name)}</span>
+                  <span class="grade-pill ${gradeClass(p.grade)}">${escapeHtml(p.grade || "-")}</span>
+                </div>
+                ${desc}
+              </li>
+            `;
+          })
+          .join("");
+
+        const commentsHtml = boulder.comments && boulder.comments.trim()
+          ? `<div class="popup-comments"><span class="popup-comments-lbl">Comments:</span> ${escapeHtml(boulder.comments)}</div>`
+          : "";
+
+        return `
+          <div class="popup-box">
+            <div class="popup-header">
+              <div class="popup-header-top">
+                <div>
+                  <div class="popup-sector">${escapeHtml(boulder.area || "Sintra")} &bull; ${escapeHtml(boulder.sector)}${boulder.estimated ? " &bull; Estimated Pin" : ""}</div>
+                  <div class="popup-title">${escapeHtml(boulder.name)}</div>
+                </div>
+                <button type="button" class="popup-edit-btn" title="Edit boulder name, location, problems &amp; comments">&#9998; Edit</button>
+              </div>
+              <div class="popup-coords">
+                <span>${boulder.lat !== null ? `${boulder.lat.toFixed(6)}, ${boulder.lon.toFixed(6)}` : "No GPS"}${estTag}</span>
+                <a href="${gMapsUrl}" target="_blank" rel="noopener">Google Maps &nearr;</a>
+              </div>
+            </div>
+            <div class="popup-body">
+              ${descHtml}
+              ${commentsHtml}
+              <ul class="problem-list">${problemItems}</ul>
+              ${topoHtml}
+              ${buildBoulderPhotoStage(boulder)}
+              <div class="popup-footer-actions">
+                <button type="button" class="btn-danger-outline popup-delete-btn" title="Delete boulder permanently">&#128465; Delete Boulder</button>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      function buildProblemEditCard(nameVal, gradeVal, descVal) {
+        return `
+          <div class="pe-prob-card">
+            <div class="pe-prob-row">
+              <input type="text" class="pe-input pe-prob-name" value="${escapeHtml(nameVal)}" placeholder="Problem name" />
+              <input type="text" class="pe-input pe-prob-grade" list="gradeSuggestions" value="${escapeHtml(gradeVal)}" placeholder="Grade" />
+              <button type="button" class="pe-del-prob" title="Remove problem">&times;</button>
+            </div>
+            <input type="text" class="pe-input pe-prob-desc" value="${escapeHtml(descVal || "")}" placeholder="Beta / route description (optional)" />
+          </div>
+        `;
+      }
+
+      function buildBoulderEditFormHtml(boulder) {
+        const rows = (boulder.problems.length > 0 ? boulder.problems : [{ name: "", grade: "", desc: "" }])
+          .map(p => buildProblemEditCard(p.name, p.grade, p.desc))
+          .join("");
+
+        return `
+          <div class="popup-box">
+            <div class="popup-header">
+              <div class="popup-sector">${escapeHtml(boulder.sector)} &bull; Editing</div>
+              <div class="popup-title">${escapeHtml(boulder.name)}</div>
+            </div>
+            <div class="popup-body" style="max-height: 52vh;">
+              <form class="popup-edit-form">
+                <div class="pe-field">
+                  <label class="pe-label">Area &amp; Sector</label>
+                  <div class="modal-coords-grid">
+                    <input type="text" class="pe-input pe-area" list="areaSuggestions" value="${escapeHtml(boulder.area || "Malveira")}" placeholder="Area" />
+                    <input type="text" class="pe-input pe-sector" list="sectorSuggestions" value="${escapeHtml(boulder.sector)}" placeholder="Sector" required />
+                  </div>
+                </div>
+                <div class="pe-field">
+                  <label class="pe-label">Boulder Name</label>
+                  <input type="text" class="pe-input pe-name" value="${escapeHtml(boulder.name)}" required />
+                </div>
+                <div class="pe-field">
+                  <label class="pe-label">Location Tools</label>
+                  <div class="pe-loc-tools">
+                    <button type="button" class="btn modal-move-btn pe-move-pin-btn">&#128205; Move Pin on Map</button>
+                    <button type="button" class="btn modal-gps-btn pe-use-gps-btn">&#127919; Use Current GPS</button>
+                  </div>
+                  <div class="modal-coords-grid">
+                    <input type="number" step="0.000001" class="pe-input pe-lat" value="${boulder.lat !== null ? boulder.lat.toFixed(6) : ""}" placeholder="Latitude" />
+                    <input type="number" step="0.000001" class="pe-input pe-lon" value="${boulder.lon !== null ? boulder.lon.toFixed(6) : ""}" placeholder="Longitude" />
+                  </div>
+                </div>
+                <div class="pe-field">
+                  <label class="pe-label">Problems, Grades &amp; Descriptions</label>
+                  <div class="pe-prob-list">${rows}</div>
+                  <button type="button" class="pe-add-prob">+ Add Problem</button>
+                </div>
+                <div class="pe-field">
+                  <label class="pe-label">Comments / Beta Notes</label>
+                  <textarea class="pe-textarea pe-comments" placeholder="Personal beta, landing notes...">${escapeHtml(boulder.comments || "")}</textarea>
+                </div>
+                <div class="pe-error"></div>
+                <div class="pe-actions">
+                  <button type="button" class="btn-danger-outline pe-delete-btn">&#128465; Delete</button>
+                  <div class="btn-group">
+                    <button type="button" class="btn pe-cancel-btn">Cancel</button>
+                    <button type="submit" class="btn btn-primary pe-save-btn">Save</button>
+                  </div>
+                </div>
+              </form>
+            </div>
+          </div>
+        `;
+      }
+
+      function buildParkingPopup(p) {
+        const namesList = Array.from(p.names).join(" / ");
+        const sectorsList = Array.from(p.sectors).join(", ");
+        const gMapsUrl = `https://www.google.com/maps/search/?api=1&query=${p.lat},${p.lon}`;
+        const descHtml = p.description
+          ? `<div class="popup-description" style="margin-top:8px;">${escapeHtml(p.description)}</div>`
+          : '';
+        const topoHtml = p.topo_url
+          ? `<div class="popup-topo-wrap"><a class="popup-topo-link" href="${escapeHtml(p.topo_url)}" target="_blank" rel="noopener">View Sector Topo &nearr;</a></div>`
+          : '';
+        return `
+          <div class="popup-box">
+            <div class="popup-header parking-hdr">
+              <div class="popup-sector">Parking</div>
+              <div class="popup-title">${escapeHtml(namesList)}</div>
+              <div class="popup-coords">
+                <span>${p.lat.toFixed(6)}, ${p.lon.toFixed(6)}</span>
+                <a href="${gMapsUrl}" target="_blank" rel="noopener">Navigate &nearr;</a>
+              </div>
+            </div>
+            <div class="popup-body">
+              <div style="font-size:0.83rem;color:#334155;">
+                <strong>Serves sectors:</strong> ${escapeHtml(sectorsList)}
+              </div>
+              ${descHtml}
+              ${topoHtml}
+            </div>
+          </div>
+        `;
+      }
+
+      // Sidebar & List Rendering (Capped at 25 items for 60fps)
+      const gradeFilterEl = document.getElementById("gradeFilter");
+      const searchFilterEl = document.getElementById("searchFilter");
+      const showParkingEl = document.getElementById("showParking");
+      const boulderListEl = document.getElementById("boulderList");
+
+      let activeMarkers = [];
+      let currentMarkerByKey = new Map();
+      let displayedCardsLimit = 25;
+
+      function render(resetLimit = true) {
+        if (resetLimit) displayedCardsLimit = 25;
+        const areaVal = areaSelect.value;
+        const sectorVal = sectorSelect.value;
+        const gradeVal = gradeFilterEl.value;
+        const searchVal = searchFilterEl.value.trim().toLowerCase();
+        const showParking = showParkingEl.checked;
+
+        boulderLayerGroup.clearLayers();
+        parkingLayerGroup.clearLayers();
+        activeMarkers = [];
+
+        const markerByKey = new Map();
+
+        const filteredBoulders = boulders.filter(b => {
+          if (areaVal !== "ALL" && b.area !== areaVal) return false;
+          if (sectorVal !== "ALL" && b.sector !== sectorVal) return false;
+          const nameMatches = searchVal && b.name.toLowerCase().includes(searchVal);
+          const commentMatches = searchVal && (b.comments || "").toLowerCase().includes(searchVal);
+          if (b.problems.length === 0) {
+            return gradeVal === "ALL" && (!searchVal || nameMatches || commentMatches);
+          }
+          return b.problems.some(p => {
+            const gOk = gradeMatchesFilter(p.grade, gradeVal);
+            const sOk = !searchVal || nameMatches || commentMatches || p.name.toLowerCase().includes(searchVal);
+            return gOk && sOk;
+          });
+        });
+
+        let totalMatchingProblems = 0;
+        filteredBoulders.forEach(b => {
+          totalMatchingProblems += b.problems.filter(p => {
+            const gOk = gradeMatchesFilter(p.grade, gradeVal);
+            const sOk =
+              !searchVal ||
+              b.name.toLowerCase().includes(searchVal) ||
+              (b.comments || "").toLowerCase().includes(searchVal) ||
+              p.name.toLowerCase().includes(searchVal);
+            return gOk && sOk;
+          }).length;
+        });
+
+        let mappedCount = 0;
+        const mappedBoulders = [];
+        filteredBoulders.forEach(b => { if (b.lat !== null && b.lon !== null) { mappedCount++; mappedBoulders.push(b); } });
+        const z = map.getZoom(), vb = map.getBounds().pad(0.25);
+        if (z < 16 && sectorVal === "ALL" && !searchVal) {
+          // Zoomed out: hide individual boulders and sector pills (Area zone handles this zoom level)
+        } else {
+          mappedBoulders.forEach(b => {
+            if (sectorVal === "ALL" && !searchVal && !vb.contains([b.displayLat, b.displayLon])) return;
+            const m = L.circleMarker([b.displayLat, b.displayLon], { radius: 9, fillColor: b.estimated ? "#f59e0b" : "#d97706", color: "#ffffff", weight: 2, opacity: 1, fillOpacity: 0.92 });
+            m._boulderRef = b;
+            m.bindPopup(() => buildBoulderPopup(b, gradeVal, searchVal));
+            m.addTo(boulderLayerGroup); activeMarkers.push(m); markerByKey.set(b.baseKey, m);
+          });
+        }
+
+        let visibleParkingCount = 0;
+        if (showParking) {
+          parkings.forEach(p => {
+            if (areaVal !== "ALL" && !p.areas.has(areaVal)) return;
+            if (sectorVal !== "ALL" && !p.sectors.has(sectorVal)) return;
+            visibleParkingCount++;
+            const icon = L.divIcon({
+              className: "",
+              html: `<div class="marker-parking" title="Parking">P</div>`,
+              iconSize: [26, 26],
+              iconAnchor: [13, 13],
+              popupAnchor: [0, -13]
+            });
+            const marker = L.marker([p.lat, p.lon], { icon });
+            marker.bindPopup(buildParkingPopup(p));
+            marker.addTo(parkingLayerGroup);
+            activeMarkers.push(marker);
+          });
+        }
+
+        document.getElementById("statMapped").textContent = mappedCount;
+        document.getElementById("statProblems").textContent = totalMatchingProblems;
+        document.getElementById("statParking").textContent = visibleParkingCount;
+
+        // Render Capped Sidebar List
+        const mappedList = filteredBoulders.filter(b => b.lat !== null);
+        const unmappedList = filteredBoulders.filter(b => b.lat === null);
+
+        let html = "";
+        if (mappedList.length > 0) {
+          html += `<div class="list-section-title">Mapped Boulders (${mappedList.length})</div>`;
+          const sliceMapped = mappedList.slice(0, displayedCardsLimit);
+          html += sliceMapped.map(b => renderCard(b, true, gradeVal)).join("");
+          if (mappedList.length > displayedCardsLimit) {
+            html += `
+              <div class="show-more-wrap">
+                <button type="button" class="show-more-btn" id="showMoreCardsBtn">
+                  Show More (+25 of ${mappedList.length - displayedCardsLimit} remaining)
+                </button>
+              </div>
+            `;
+          }
+        }
+        if (unmappedList.length > 0) {
+          html += `<div class="list-section-title">Unmapped Boulders (${unmappedList.length})</div>`;
+          html += unmappedList.map(b => renderCard(b, false, gradeVal)).join("");
+        }
+        if (filteredBoulders.length === 0) {
+          html = `<div style="padding:20px;text-align:center;color:#64748b;font-size:0.86rem;">No boulders match your filters.</div>`;
+        }
+
+        currentMarkerByKey = markerByKey;
+        boulderListEl.innerHTML = html;
+
+        boulderListEl.querySelectorAll(".boulder-card[data-key]").forEach(card => {
+          card.addEventListener("click", () => {
+            const m = markerByKey.get(card.dataset.key);
+            if (m) {
+              map.setView(m.getLatLng(), Math.max(map.getZoom(), 17), { animate: true });
+              m.openPopup();
+            }
+          });
+        });
+
+        const showMoreBtn = document.getElementById("showMoreCardsBtn");
+        if (showMoreBtn) {
+          showMoreBtn.addEventListener("click", () => {
+            displayedCardsLimit += 25;
+            render(false);
+          });
+        }
+
+        updateMapLabels();
+      }
+
+      function renderCard(b, isMapped, gradeVal) {
+        const keyAttr = isMapped ? `data-key="${escapeHtml(b.baseKey)}"` : "";
+        const pills = b.problems
+          .filter(p => gradeMatchesFilter(p.grade, gradeVal))
+          .slice(0, 5)
+          .map(p => `<span class="grade-pill ${gradeClass(p.grade)}">${escapeHtml(p.name)} (${escapeHtml(p.grade || "-")})</span>`)
+          .join("");
+        const extra =
+          b.problems.filter(p => gradeMatchesFilter(p.grade, gradeVal)).length > 5
+            ? `<span class="grade-pill g-proj">+more</span>`
+            : "";
+
+        return `
+          <div class="boulder-card ${isMapped ? "" : "unmapped"}" ${keyAttr}>
+            <div class="card-top">
+              <div>
+                <div class="card-title">${escapeHtml(b.name)}</div>
+                <div class="card-sector">${escapeHtml(b.area || "Sintra")} &bull; ${escapeHtml(b.sector)} &bull; ${b.problems.length} line${b.problems.length === 1 ? "" : "s"}</div>
+              </div>
+              <span class="badge ${!isMapped ? "badge-nogps" : (b.estimated ? "badge-est" : "badge-gps")}">${!isMapped ? "No GPS" : (b.estimated ? "Est. GPS" : "GPS")}</span>
+            </div>
+            <div class="card-problems-preview">${pills}${extra}</div>
+          </div>
+        `;
+      }
+
+      function fitVisibleMarkers() {
+        if (activeMarkers.length === 0) return;
+        const group = L.featureGroup(activeMarkers);
+        map.fitBounds(group.getBounds().pad(0.12), { maxNativeZoom: 18, maxZoom: 22 });
+      }
+
+      areaSelect.addEventListener("change", () => {
+        render();
+        fitVisibleMarkers();
+      });
+      sectorSelect.addEventListener("change", () => {
+        render();
+        fitVisibleMarkers();
+      });
+      gradeFilterEl.addEventListener("change", () => render());
+      searchFilterEl.addEventListener("input", () => render());
+      showParkingEl.addEventListener("change", () => render());
+
+      document.getElementById("fitBtn").addEventListener("click", fitVisibleMarkers);
+
+      document.getElementById("resetBtn").addEventListener("click", () => {
+        areaSelect.value = "ALL";
+        sectorSelect.value = "ALL";
+        gradeFilterEl.value = "ALL";
+        searchFilterEl.value = "";
+        showParkingEl.checked = true;
+        render();
+        map.setView([38.7556, -9.4316], 15);
+      });
+
+      // Mobile Responsive Sidebar Setup
+      const sidebar = document.getElementById("sidebar");
+      const sidebarToggle = document.getElementById("sidebarToggle");
+      const sidebarCloseBtn = document.getElementById("sidebarCloseBtn");
+
+      if (window.innerWidth <= 768) {
+        sidebar.classList.add("collapsed");
+      }
+
+      sidebarToggle.addEventListener("click", () => {
+        sidebar.classList.toggle("collapsed");
+        setTimeout(() => map.invalidateSize(), 240);
+      });
+
+      sidebarCloseBtn.addEventListener("click", () => {
+        sidebar.classList.add("collapsed");
+        setTimeout(() => map.invalidateSize(), 240);
+      });
+
+      // Delete Boulder Action
+      async function deleteBoulder(boulder) {
+        if (!boulder) return;
+        const confirmDelete = window.confirm(`Permanently delete "${boulder.name}" from map, list, and backups?`);
+        if (!confirmDelete) return;
+
+        boulderMap.delete(boulder.baseKey);
+        if (!savedStore.deleted.includes(boulder.baseKey)) {
+          savedStore.deleted.push(boulder.baseKey);
+        }
+        delete savedStore.edits[boulder.baseKey];
+        savedStore.created = savedStore.created.filter(c => c && (c.baseKey !== boulder.baseKey && c.id !== boulder.baseKey));
+
+        persistSavedStore();
+        await deleteBoulderPhoto(`${boulder.sector}||${boulder.name}`);
+        customToposMap.delete(`${boulder.sector}||${boulder.name}`);
+
+        map.closePopup();
+        refreshCollections();
+        populateDropdowns();
+        render();
+      }
+
+      // Move Pin on Map Mode (Drag Pin or Tap Map)
+      const movePinBanner = document.getElementById("movePinBanner");
+      const cancelMovePinBtn = document.getElementById("cancelMovePinBtn");
+      let movingBoulder = null;
+      let movingMarker = null;
+
+      function startMovePinMode(boulder) {
+        movingBoulder = boulder;
+        map.closePopup();
+        movingMarker = currentMarkerByKey.get(boulder.baseKey);
+        if (!movingMarker) return;
+
+        movePinBanner.classList.add("active");
+        document.getElementById("movePinText").textContent = `Drag marker or tap map to place "${boulder.name}"`;
+
+        const iconEl = movingMarker.getElement();
+        if (iconEl) {
+          const inner = iconEl.querySelector(".marker-boulder");
+          if (inner) inner.classList.add("moving-pin");
+        }
+
+        movingMarker.dragging.enable();
+
+        movingMarker.once("dragend", e => {
+          const newPos = e.target.getLatLng();
+          finishMovePin(newPos.lat, newPos.lng);
+        });
+
+        map.once("click", e => {
+          if (!movingBoulder) return;
+          finishMovePin(e.latlng.lat, e.latlng.lng);
+        });
+      }
+
+      function finishMovePin(lat, lon) {
+        if (!movingBoulder) return;
+        const b = movingBoulder;
+        b.lat = lat;
+        b.lon = lon;
+        b.displayLat = lat;
+        b.displayLon = lon;
+        b.estimated = false;
+
+        if (b.isCustom) {
+          const rec = savedStore.created.find(c => c && (c.baseKey === b.baseKey || c.id === b.baseKey));
+          if (rec) {
+            rec.lat = lat;
+            rec.lon = lon;
+          }
+        } else {
+          if (!savedStore.edits[b.baseKey]) {
+            savedStore.edits[b.baseKey] = {
+              name: b.name,
+              problems: b.problems,
+              comments: b.comments
+            };
+          }
+          savedStore.edits[b.baseKey].lat = lat;
+          savedStore.edits[b.baseKey].lon = lon;
+        }
+
+        persistSavedStore();
+        cancelMovePin();
+        refreshCollections();
+        render();
+
+        const updatedMarker = currentMarkerByKey.get(b.baseKey);
+        if (updatedMarker) updatedMarker.openPopup();
+      }
+
+      function cancelMovePin() {
+        if (movingMarker && movingMarker.dragging) movingMarker.dragging.disable();
+        movePinBanner.classList.remove("active");
+        movingBoulder = null;
+        movingMarker = null;
+      }
+
+      cancelMovePinBtn.addEventListener("click", cancelMovePin);
+
+      // Wire Popup Controls (Photos, Lines, Topo Highlighting, Move Pin, Delete)
+      function wirePopupControls(popup, boulder) {
+        if (!popup || !boulder) return;
+        const el = popup.getElement();
+        if (!el) return;
+
+        const boulderKey = `${boulder.sector}||${boulder.name}`;
+        const box = el.querySelector(".popup-box");
+        if (box && window.L && L.DomEvent) {
+          L.DomEvent.disableClickPropagation(box);
+          L.DomEvent.disableScrollPropagation(box);
+        }
+
+        // Delete button in popup
+        const delBtn = el.querySelector(".popup-delete-btn");
+        if (delBtn) delBtn.addEventListener("click", () => deleteBoulder(boulder));
+
+        // SVG topo hover/tap bidirectional highlighting
+        const svgOverlay = el.querySelector(".topo-svg-overlay");
+        const probItems = el.querySelectorAll(".problem-item");
+        const topoGroups = el.querySelectorAll(".topo-svg-group");
+
+        function highlightProblemAndLine(probIdx) {
+          probItems.forEach(item => {
+            const match = parseInt(item.dataset.probIdx, 10) === probIdx;
+            item.classList.toggle("is-line-active", match);
+          });
+          if (svgOverlay) {
+            svgOverlay.classList.toggle("has-highlight", probIdx !== null);
+          }
+          topoGroups.forEach(g => {
+            const match = parseInt(g.dataset.probIdx, 10) === probIdx;
+            g.classList.toggle("is-highlighted", match);
+          });
+        }
+
+        probItems.forEach(item => {
+          const idx = parseInt(item.dataset.probIdx, 10);
+          item.addEventListener("mouseenter", () => highlightProblemAndLine(idx));
+          item.addEventListener("mouseleave", () => highlightProblemAndLine(null));
+          item.addEventListener("click", () => highlightProblemAndLine(idx));
+        });
+
+        topoGroups.forEach(g => {
+          const idx = parseInt(g.dataset.probIdx, 10);
+          g.addEventListener("mouseenter", () => highlightProblemAndLine(idx));
+          g.addEventListener("mouseleave", () => highlightProblemAndLine(null));
+          g.addEventListener("click", ev => {
+            ev.stopPropagation();
+            highlightProblemAndLine(idx);
+          });
+        });
+
+        // Photo Upload / Replace
+        const fileInput = el.querySelector(".popup-photo-input");
+        if (fileInput) {
+          fileInput.addEventListener("change", async ev => {
+            const file = ev.target.files && ev.target.files[0];
+            if (!file) return;
+            try {
+              const dataUrl = await readAndResizePhoto(file);
+              await saveBoulderPhoto(boulderKey, dataUrl);
+              popup.setContent(buildBoulderPopup(boulder, gradeFilterEl.value, searchFilterEl.value.trim().toLowerCase()));
+              popup.update();
+              wirePopupControls(popup, boulder);
+            } catch (err) {
+              console.error("Photo save failed:", err);
+            }
+          });
+        }
+
+        // Draw Line button
+        const drawBtn = el.querySelector(".popup-draw-btn");
+        if (drawBtn) {
+          drawBtn.addEventListener("click", () => {
+            const imgEl = el.querySelector(".popup-boulder-img");
+            const src = imgEl ? (imgEl.currentSrc || imgEl.src) : (customPhotosMap.get(boulderKey) || boulder.image_url || "");
+            if (src) openDrawLineModal(boulder, popup, src);
+          });
+        }
+
+        // Reset Photo
+        const resetPhotoBtn = el.querySelector(".popup-reset-photo");
+        if (resetPhotoBtn) {
+          resetPhotoBtn.addEventListener("click", async () => {
+            await deleteBoulderPhoto(boulderKey);
+            popup.setContent(buildBoulderPopup(boulder, gradeFilterEl.value, searchFilterEl.value.trim().toLowerCase()));
+            popup.update();
+            wirePopupControls(popup, boulder);
+          });
+        }
+
+        // Edit button
+        const editBtn = el.querySelector(".popup-edit-btn");
+        if (editBtn) {
+          editBtn.addEventListener("click", () => {
+            popup.setContent(buildBoulderEditFormHtml(boulder));
+            popup.update();
+            wireEditFormControls(popup, boulder);
+          });
+        }
+      }
+
+      function wireEditFormControls(popup, boulder) {
+        if (!popup || !boulder) return;
+        const el = popup.getElement();
+        if (!el) return;
+
+        const form = el.querySelector(".popup-edit-form");
+        if (!form) return;
+
+        const probList = form.querySelector(".pe-prob-list");
+        const addProbBtn = form.querySelector(".pe-add-prob");
+        const cancelBtn = form.querySelector(".pe-cancel-btn");
+        const deleteBtn = form.querySelector(".pe-delete-btn");
+        const movePinBtn = form.querySelector(".pe-move-pin-btn");
+        const useGpsBtn = form.querySelector(".pe-use-gps-btn");
+        const errorBox = form.querySelector(".pe-error");
+
+        if (deleteBtn) deleteBtn.addEventListener("click", () => deleteBoulder(boulder));
+
+        if (movePinBtn) {
+          movePinBtn.addEventListener("click", () => startMovePinMode(boulder));
+        }
+
+        if (useGpsBtn) {
+          useGpsBtn.addEventListener("click", () => {
+            if (lastGpsPos) {
+              form.querySelector(".pe-lat").value = lastGpsPos.lat.toFixed(6);
+              form.querySelector(".pe-lon").value = lastGpsPos.lng.toFixed(6);
+              return;
+            }
+            if (!navigator.geolocation) return alert("Geolocation not supported");
+            useGpsBtn.textContent = "Locating...";
+            navigator.geolocation.getCurrentPosition(
+              pos => {
+                useGpsBtn.innerHTML = "&#127919; Use Current GPS";
+                lastGpsPos = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy };
+                form.querySelector(".pe-lat").value = pos.coords.latitude.toFixed(6);
+                form.querySelector(".pe-lon").value = pos.coords.longitude.toFixed(6);
+              },
+              err => {
+                useGpsBtn.innerHTML = "&#127919; Use Current GPS";
+                alert("GPS error: " + (err ? err.message : "Permission denied"));
+              },
+              { enableHighAccuracy: true, timeout: 10000 }
+            );
+          });
+        }
+
+        function wireDeletes() {
+          probList.querySelectorAll(".pe-del-prob").forEach(btn => {
+            btn.onclick = () => btn.closest(".pe-prob-card").remove();
+          });
+        }
+        wireDeletes();
+
+        addProbBtn.addEventListener("click", () => {
+          probList.insertAdjacentHTML("beforeend", buildProblemEditCard("", "", ""));
+          wireDeletes();
+        });
+
+        cancelBtn.addEventListener("click", () => {
+          popup.setContent(buildBoulderPopup(boulder, gradeFilterEl.value, searchFilterEl.value.trim().toLowerCase()));
+          popup.update();
+          wirePopupControls(popup, boulder);
+        });
+
+        form.addEventListener("submit", async ev => {
+          ev.preventDefault();
+          const newArea = (form.querySelector(".pe-area").value || "").trim() || "Malveira";
+          const newSector = (form.querySelector(".pe-sector").value || "").trim();
+          const newName = (form.querySelector(".pe-name").value || "").trim();
+          const newComments = (form.querySelector(".pe-comments").value || "").trim();
+          const latVal = parseFloat(form.querySelector(".pe-lat").value);
+          const lonVal = parseFloat(form.querySelector(".pe-lon").value);
+
+          if (!newName || !newSector) {
+            errorBox.textContent = "Boulder name and sector are required.";
+            errorBox.classList.add("visible");
+            return;
+          }
+
+          const newProblems = [];
+          probList.querySelectorAll(".pe-prob-card").forEach(card => {
+            const pName = (card.querySelector(".pe-prob-name").value || "").trim();
+            const pGrade = normalizeGrade(card.querySelector(".pe-prob-grade").value);
+            const pDesc = (card.querySelector(".pe-prob-desc").value || "").trim();
+            if (pName || pGrade) {
+              newProblems.push({
+                name: pName || "?",
+                grade: pGrade,
+                desc: pDesc
+              });
+              if (pGrade && pGrade !== "?") gradesSet.add(pGrade);
+            }
+          });
+
+          const oldPhotoKey = `${boulder.sector}||${boulder.name}`;
+          const newPhotoKey = `${newSector}||${newName}`;
+
+          boulder.area = newArea;
+          boulder.sector = newSector;
+          boulder.name = newName;
+          boulder.comments = newComments;
+          boulder.problems = newProblems;
+
+          if (Number.isFinite(latVal) && Number.isFinite(lonVal)) {
+            boulder.lat = latVal;
+            boulder.lon = lonVal;
+            boulder.displayLat = latVal;
+            boulder.displayLon = lonVal;
+            boulder.estimated = false;
+          }
+
+          if (oldPhotoKey !== newPhotoKey) {
+            if (customPhotosMap.has(oldPhotoKey)) {
+              const photo = customPhotosMap.get(oldPhotoKey);
+              await saveBoulderPhoto(newPhotoKey, photo);
+              await deleteBoulderPhoto(oldPhotoKey);
+            }
+            if (customToposMap.has(oldPhotoKey)) {
+              const topos = customToposMap.get(oldPhotoKey);
+              await saveBoulderTopos(newPhotoKey, topos);
+              customToposMap.delete(oldPhotoKey);
+            }
+          }
+
+          if (boulder.isCustom) {
+            const target = savedStore.created.find(c => c && (c.baseKey === boulder.baseKey || c.id === boulder.baseKey));
+            if (target) {
+              target.area = newArea;
+              target.sector = newSector;
+              target.name = newName;
+              target.comments = newComments;
+              target.problems = newProblems;
+              target.lat = boulder.lat;
+              target.lon = boulder.lon;
+            }
+          } else {
+            savedStore.edits[boulder.baseKey] = {
+              area: newArea,
+              sector: newSector,
+              name: newName,
+              comments: newComments,
+              problems: newProblems,
+              lat: boulder.lat,
+              lon: boulder.lon,
+              updatedAt: Date.now()
+            };
+          }
+
+          persistSavedStore();
+          areasSet.add(newArea);
+          sectorsSet.add(newSector);
+          refreshCollections();
+          populateDropdowns();
+          render();
+
+          const m = currentMarkerByKey.get(boulder.baseKey);
+          if (m) m.openPopup();
+        });
+      }
+
+      map.on("popupopen", e => {
+        const marker = e.popup && e.popup._source;
+        if (marker && marker._boulderRef) {
+          wirePopupControls(e.popup, marker._boulderRef);
+        }
+      });
+
+      // + Add New Boulder Modal
+      const addBoulderModal = document.getElementById("addBoulderModal");
+      const addBoulderBtn = document.getElementById("addBoulderBtn");
+      const nbCloseBtn = document.getElementById("nbCloseBtn");
+      const nbCancelBtn = document.getElementById("nbCancelBtn");
+      const nbSaveBtn = document.getElementById("nbSaveBtn");
+      const nbAreaEl = document.getElementById("nbArea");
+      const nbSectorEl = document.getElementById("nbSector");
+      const nbNameEl = document.getElementById("nbName");
+      const nbLatEl = document.getElementById("nbLat");
+      const nbLonEl = document.getElementById("nbLon");
+      const nbUseGpsBtn = document.getElementById("nbUseGpsBtn");
+      const nbPhotoInput = document.getElementById("nbPhotoInput");
+      const nbPhotoPreview = document.getElementById("nbPhotoPreview");
+      const nbProblemsContainer = document.getElementById("nbProblemsContainer");
+      const nbAddProbBtn = document.getElementById("nbAddProbBtn");
+      const nbCommentsEl = document.getElementById("nbComments");
+      const nbErrorEl = document.getElementById("nbError");
+
+      let pendingNbPhotoDataUrl = "";
+
+      function addNbProblemRow(nameVal, gradeVal, descVal) {
+        nbProblemsContainer.insertAdjacentHTML("beforeend", buildProblemEditCard(nameVal || "", gradeVal || "", descVal || ""));
+        nbProblemsContainer.querySelectorAll(".pe-del-prob").forEach(b => {
+          b.onclick = () => b.closest(".pe-prob-card").remove();
+        });
+      }
+
+      function openAddBoulderModal() {
+        nbAreaEl.value = areaSelect.value !== "ALL" ? areaSelect.value : "Malveira";
+        nbSectorEl.value = sectorSelect.value !== "ALL" ? sectorSelect.value : "";
+        nbNameEl.value = "";
+        nbCommentsEl.value = "";
+        pendingNbPhotoDataUrl = "";
+        nbPhotoPreview.removeAttribute("src");
+        nbPhotoPreview.style.display = "none";
+        nbProblemsContainer.innerHTML = "";
+        addNbProblemRow("", "", "");
+        nbErrorEl.classList.remove("visible");
+
+        if (lastGpsPos) {
+          nbLatEl.value = lastGpsPos.lat.toFixed(6);
+          nbLonEl.value = lastGpsPos.lng.toFixed(6);
+        } else {
+          const c = map.getCenter();
+          nbLatEl.value = c.lat.toFixed(6);
+          nbLonEl.value = c.lng.toFixed(6);
+        }
+        addBoulderModal.classList.add("open");
+      }
+
+      function closeAddBoulderModal() {
+        addBoulderModal.classList.remove("open");
+      }
+
+      addBoulderBtn.addEventListener("click", openAddBoulderModal);
+      nbCloseBtn.addEventListener("click", closeAddBoulderModal);
+      nbCancelBtn.addEventListener("click", closeAddBoulderModal);
+      nbAddProbBtn.addEventListener("click", () => addNbProblemRow("", "", ""));
+
+      nbPhotoInput.addEventListener("change", async e => {
+        const f = e.target.files && e.target.files[0];
+        if (!f) return;
+        pendingNbPhotoDataUrl = await readAndResizePhoto(f);
+        nbPhotoPreview.src = pendingNbPhotoDataUrl;
+        nbPhotoPreview.style.display = "block";
+      });
+
+      nbUseGpsBtn.addEventListener("click", () => {
+        if (lastGpsPos) {
+          nbLatEl.value = lastGpsPos.lat.toFixed(6);
+          nbLonEl.value = lastGpsPos.lng.toFixed(6);
+          return;
+        }
+        if (!navigator.geolocation) return alert("Geolocation not supported");
+        nbUseGpsBtn.textContent = "Locating...";
+        navigator.geolocation.getCurrentPosition(
+          pos => {
+            nbUseGpsBtn.innerHTML = "&#128205; Use Current GPS";
+            lastGpsPos = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy };
+            nbLatEl.value = pos.coords.latitude.toFixed(6);
+            nbLonEl.value = pos.coords.longitude.toFixed(6);
+          },
+          err => {
+            nbUseGpsBtn.innerHTML = "&#128205; Use Current GPS";
+            alert("GPS error: " + (err ? err.message : "Permission denied"));
+          },
+          { enableHighAccuracy: true, timeout: 10000 }
+        );
+      });
+
+      nbSaveBtn.addEventListener("click", async () => {
+        const area = (nbAreaEl.value || "").trim() || "Malveira";
+        const sector = (nbSectorEl.value || "").trim();
+        const name = (nbNameEl.value || "").trim();
+        const lat = parseFloat(nbLatEl.value);
+        const lon = parseFloat(nbLonEl.value);
+        const comments = (nbCommentsEl.value || "").trim();
+
+        if (!sector || !name) {
+          nbErrorEl.textContent = "Sector and Boulder Name are required.";
+          nbErrorEl.classList.add("visible");
+          return;
+        }
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          nbErrorEl.textContent = "Valid coordinates are required.";
+          nbErrorEl.classList.add("visible");
+          return;
+        }
+
+        const problems = [];
+        nbProblemsContainer.querySelectorAll(".pe-prob-card").forEach(c => {
+          const pName = (c.querySelector(".pe-prob-name").value || "").trim();
+          const pGrade = normalizeGrade(c.querySelector(".pe-prob-grade").value);
+          const pDesc = (c.querySelector(".pe-prob-desc").value || "").trim();
+          if (pName || pGrade) {
+            problems.push({ name: pName || "?", grade: pGrade, desc: pDesc });
+            if (pGrade && pGrade !== "?") gradesSet.add(pGrade);
+          }
+        });
+
+        const baseKey = `custom_${Date.now()}_${++customIdCounter}`;
+        const newRecord = {
+          baseKey,
+          area,
+          sector,
+          name,
+          lat,
+          lon,
+          comments,
+          problems
+        };
+
+        savedStore.created.push(newRecord);
+        persistSavedStore();
+
+        if (pendingNbPhotoDataUrl) {
+          await saveBoulderPhoto(`${sector}||${name}`, pendingNbPhotoDataUrl);
+        }
+
+        areasSet.add(area);
+        sectorsSet.add(sector);
+
+        boulderMap.set(baseKey, {
+          type: "boulder",
+          baseKey,
+          area,
+          sector,
+          name,
+          lat,
+          lon,
+          estimated: false,
+          isCustom: true,
+          comments,
+          imageUrls: new Set(),
+          problems
+        });
+
+        closeAddBoulderModal();
+        refreshCollections();
+        populateDropdowns();
+        render();
+
+        const m = currentMarkerByKey.get(baseKey);
+        if (m) {
+          map.setView(m.getLatLng(), Math.max(map.getZoom(), 17), { animate: true });
+          m.openPopup();
+        }
+      });
+
+      // Interactive SVG Vector Climb Line Drawing Modal Logic
+      const drawLineModal = document.getElementById("drawLineModal");
+      const drawModalTitle = document.getElementById("drawModalTitle");
+      const drawProblemSelect = document.getElementById("drawProblemSelect");
+      const drawModeFreehandBtn = document.getElementById("drawModeFreehand");
+      const drawModeWaypointsBtn = document.getElementById("drawModeWaypoints");
+      const drawFinishWpBtn = document.getElementById("drawFinishWpBtn");
+      const drawCloseBtn = document.getElementById("drawCloseBtn");
+      const drawCancelBtn = document.getElementById("drawCancelBtn");
+      const drawBgImg = document.getElementById("drawBgImg");
+      const drawSvg = document.getElementById("drawSvg");
+      const drawSwatches = document.getElementById("drawSwatches");
+      const drawBrushSizeEl = document.getElementById("drawBrushSize");
+      const drawBrushValEl = document.getElementById("drawBrushVal");
+      const drawUndoBtn = document.getElementById("drawUndoBtn");
+      const drawClearProblemBtn = document.getElementById("drawClearProblemBtn");
+      const drawClearBtn = document.getElementById("drawClearBtn");
+      const drawSaveBtn = document.getElementById("drawSaveBtn");
+      const drawErrorEl = document.getElementById("drawError");
+
+      let drawActiveBoulder = null;
+      let drawActivePopup = null;
+      let drawColor = "#3b82f6";
+      let drawWidth = 5;
+      let isWaypointsMode = false;
+      let activeStampText = null;
+
+      // Existing topo lines for this boulder: array of { probIdx, color, width, d, badge, stamps }
+      let localTopos = [];
+      let activeFreehandPts = [];
+      let activeWaypointPts = [];
+      let isFreehandDrawing = false;
+
+      function renderDrawSvg() {
+        drawSvg.setAttribute("viewBox", "0 0 1000 1000");
+        let markup = renderVectorTopoMarkup(localTopos, parseInt(drawProblemSelect.value, 10));
+
+        // Active in-progress stroke
+        if (isFreehandDrawing && activeFreehandPts.length > 0) {
+          const d = pointsToSmoothPathD(activeFreehandPts);
+          markup += `<path d="${d}" fill="none" stroke="${drawColor}" stroke-width="${drawWidth * 2}" stroke-linecap="round" stroke-linejoin="round" />`;
+        }
+
+        // Active in-progress waypoints
+        if (isWaypointsMode && activeWaypointPts.length > 0) {
+          const d = pointsToSmoothPathD(activeWaypointPts);
+          markup += `<path d="${d}" fill="none" stroke="${drawColor}" stroke-width="${drawWidth * 2}" stroke-dasharray="6,6" stroke-linecap="round" />`;
+          activeWaypointPts.forEach(pt => {
+            markup += `<circle cx="${pt.x}" cy="${pt.y}" r="8" fill="#ffffff" stroke="${drawColor}" stroke-width="3" />`;
+          });
+        }
+
+        drawSvg.innerHTML = markup;
+      }
+
+      function openDrawLineModal(boulder, popup, imgSrc) {
+        drawActiveBoulder = boulder;
+        drawActivePopup = popup;
+        const bKey = `${boulder.sector}||${boulder.name}`;
+        localTopos = JSON.parse(JSON.stringify(customToposMap.get(bKey) || []));
+        activeFreehandPts = [];
+        activeWaypointPts = [];
+        isFreehandDrawing = false;
+        activeStampText = null;
+        drawErrorEl.classList.remove("visible");
+
+        drawModalTitle.textContent = `Draw Line — ${boulder.name}`;
+        drawProblemSelect.innerHTML = boulder.problems
+          .map((p, idx) => `<option value="${idx}">${idx + 1}. ${escapeHtml(p.name)} (${escapeHtml(p.grade || "-")})</option>`)
+          .join("");
+
+        function updateColorForProblem() {
+          const idx = parseInt(drawProblemSelect.value, 10);
+          const p = boulder.problems[idx];
+          if (p) {
+            drawColor = gradeColor(p.grade);
+            drawSwatches.querySelectorAll(".draw-swatch").forEach(s => {
+              s.classList.toggle("active", s.dataset.color.toLowerCase() === drawColor.toLowerCase());
+            });
+          }
+          renderDrawSvg();
+        }
+
+        drawProblemSelect.onchange = updateColorForProblem;
+        updateColorForProblem();
+
+        drawBgImg.src = imgSrc;
+        drawLineModal.classList.add("open");
+        setTimeout(renderDrawSvg, 60);
+      }
+
+      function closeDrawLineModal() {
+        drawLineModal.classList.remove("open");
+        drawBgImg.removeAttribute("src");
+        localTopos = [];
+      }
+
+      drawCloseBtn.addEventListener("click", closeDrawLineModal);
+      drawCancelBtn.addEventListener("click", closeDrawLineModal);
+
+      // Mode Toggles
+      drawModeFreehandBtn.addEventListener("click", () => {
+        isWaypointsMode = false;
+        drawModeFreehandBtn.classList.add("active");
+        drawModeWaypointsBtn.classList.remove("active");
+        drawFinishWpBtn.style.display = "none";
+        if (activeWaypointPts.length >= 2) finishWaypointsLine();
+      });
+
+      drawModeWaypointsBtn.addEventListener("click", () => {
+        isWaypointsMode = true;
+        drawModeWaypointsBtn.classList.add("active");
+        drawModeFreehandBtn.classList.remove("active");
+        drawFinishWpBtn.style.display = "inline-block";
+      });
+
+      // Swatches & Size
+      drawSwatches.querySelectorAll(".draw-swatch").forEach(b => {
+        b.addEventListener("click", () => {
+          drawSwatches.querySelectorAll(".draw-swatch").forEach(s => s.classList.remove("active"));
+          b.classList.add("active");
+          drawColor = b.dataset.color;
+        });
+      });
+
+      drawBrushSizeEl.addEventListener("input", () => {
+        drawWidth = parseInt(drawBrushSizeEl.value, 10) || 5;
+        drawBrushValEl.textContent = String(drawWidth);
+      });
+
+      // Stamp Tools
+      document.querySelectorAll(".draw-stamp-btn[data-stamp]").forEach(b => {
+        b.addEventListener("click", () => {
+          activeStampText = b.dataset.stamp;
+          document.querySelectorAll(".draw-stamp-btn").forEach(s => s.classList.remove("active"));
+          b.classList.add("active");
+        });
+      });
+
+      document.getElementById("drawCustomStampBtn").addEventListener("click", () => {
+        const text = (document.getElementById("drawCustomStampInput").value || "").trim().toUpperCase();
+        if (text) {
+          activeStampText = text;
+          document.querySelectorAll(".draw-stamp-btn").forEach(s => s.classList.remove("active"));
+          document.getElementById("drawCustomStampBtn").classList.add("active");
+        }
+      });
+
+      function getSvgPoint(ev) {
+        const rect = drawBgImg.getBoundingClientRect();
+        const clientX = ev.touches && ev.touches.item(0) ? ev.touches.item(0).clientX : ev.clientX;
+        const clientY = ev.touches && ev.touches.item(0) ? ev.touches.item(0).clientY : ev.clientY;
+        const x = Math.round(Math.max(0, Math.min(1000, ((clientX - rect.left) / Math.max(1, rect.width)) * 1000)));
+        const y = Math.round(Math.max(0, Math.min(1000, ((clientY - rect.top) / Math.max(1, rect.height)) * 1000)));
+        return { x, y };
+      }
+
+      function finishWaypointsLine() {
+        if (activeWaypointPts.length < 2) {
+          activeWaypointPts = [];
+          renderDrawSvg();
+          return;
+        }
+        const probIdx = parseInt(drawProblemSelect.value, 10);
+        localTopos = localTopos.filter(t => t.probIdx !== probIdx);
+        const d = pointsToSmoothPathD(activeWaypointPts);
+        localTopos.push({
+          probIdx,
+          color: drawColor,
+          width: drawWidth,
+          d,
+          badge: {
+            x: activeWaypointPts[0].x,
+            y: activeWaypointPts[0].y,
+            text: String(probIdx + 1)
+          },
+          stamps: []
+        });
+        activeWaypointPts = [];
+        renderDrawSvg();
+      }
+
+      drawFinishWpBtn.addEventListener("click", finishWaypointsLine);
+
+      drawSvg.addEventListener("pointerdown", ev => {
+        ev.preventDefault();
+        const pt = getSvgPoint(ev);
+
+        // Place stamp if active
+        if (activeStampText) {
+          const probIdx = parseInt(drawProblemSelect.value, 10);
+          let target = localTopos.find(t => t.probIdx === probIdx);
+          if (!target) {
+            target = { probIdx, color: drawColor, width: drawWidth, d: "", badge: null, stamps: [] };
+            localTopos.push(target);
+          }
+          if (!Array.isArray(target.stamps)) target.stamps = [];
+          target.stamps.push({ x: pt.x, y: pt.y, text: activeStampText });
+          activeStampText = null;
+          document.querySelectorAll(".draw-stamp-btn").forEach(s => s.classList.remove("active"));
+          renderDrawSvg();
+          return;
+        }
+
+        if (isWaypointsMode) {
+          activeWaypointPts.push(pt);
+          renderDrawSvg();
+          return;
+        }
+
+        // Freehand
+        isFreehandDrawing = true;
+        activeFreehandPts = [pt];
+        renderDrawSvg();
+      });
+
+      drawSvg.addEventListener("pointermove", ev => {
+        if (!isFreehandDrawing) return;
+        ev.preventDefault();
+        activeFreehandPts.push(getSvgPoint(ev));
+        renderDrawSvg();
+      });
+
+      function finishFreehand() {
+        if (!isFreehandDrawing) return;
+        isFreehandDrawing = false;
+        if (activeFreehandPts.length >= 2) {
+          const probIdx = parseInt(drawProblemSelect.value, 10);
+          localTopos = localTopos.filter(t => t.probIdx !== probIdx);
+          const d = pointsToSmoothPathD(activeFreehandPts);
+          localTopos.push({
+            probIdx,
+            color: drawColor,
+            width: drawWidth,
+            d,
+            badge: {
+              x: activeFreehandPts[0].x,
+              y: activeFreehandPts[0].y,
+              text: String(probIdx + 1)
+            },
+            stamps: []
+          });
+        }
+        activeFreehandPts = [];
+        renderDrawSvg();
+      }
+
+      drawSvg.addEventListener("pointerup", finishFreehand);
+      drawSvg.addEventListener("pointercancel", finishFreehand);
+
+      drawUndoBtn.addEventListener("click", () => {
+        if (isWaypointsMode && activeWaypointPts.length > 0) {
+          activeWaypointPts.pop();
+          renderDrawSvg();
+          return;
+        }
+        if (localTopos.length > 0) {
+          localTopos.pop();
+          renderDrawSvg();
+        }
+      });
+
+      drawClearProblemBtn.addEventListener("click", () => {
+        const probIdx = parseInt(drawProblemSelect.value, 10);
+        localTopos = localTopos.filter(t => t.probIdx !== probIdx);
+        activeWaypointPts = [];
+        activeFreehandPts = [];
+        renderDrawSvg();
+      });
+
+      drawClearBtn.addEventListener("click", () => {
+        localTopos = [];
+        activeWaypointPts = [];
+        activeFreehandPts = [];
+        renderDrawSvg();
+      });
+
+      drawSaveBtn.addEventListener("click", async () => {
+        if (!drawActiveBoulder) return;
+        const bKey = `${drawActiveBoulder.sector}||${drawActiveBoulder.name}`;
+        await saveBoulderTopos(bKey, localTopos);
+
+        if (drawActivePopup) {
+          drawActivePopup.setContent(buildBoulderPopup(drawActiveBoulder, gradeFilterEl.value, searchFilterEl.value.trim().toLowerCase()));
+          drawActivePopup.update();
+          wirePopupControls(drawActivePopup, drawActiveBoulder);
+        }
+        closeDrawLineModal();
+      });
+
+      // Live Smartphone GPS
+      const locateBtn = document.getElementById("locateBtn");
+      const copyGpsBtn = document.getElementById("copyGpsBtn");
+      const gpsReadout = document.getElementById("gpsReadout");
+      const gpsLayerGroup = L.layerGroup().addTo(map);
+      let gpsMarker = null;
+      let gpsAccuracyCircle = null;
+      let isLocating = false;
+      let lastGpsPos = null;
+
+      const gpsIcon = L.divIcon({
+        className: "",
+        html: '<div class="gps-pulse-wrap"><div class="gps-pulse-ring"></div><div class="gps-pulse-core"></div></div>',
+        iconSize: [24, 24],
+        iconAnchor: [12, 12]
+      });
+
+      locateBtn.addEventListener("click", () => {
+        if (!isLocating) {
+          isLocating = true;
+          locateBtn.classList.add("active");
+          locateBtn.innerHTML = "&#128205; Locating...";
+          gpsReadout.classList.remove("error");
+          gpsReadout.textContent = "Waiting for GPS...";
+          map.locate({ setView: true, watch: true, enableHighAccuracy: true });
+        } else {
+          isLocating = false;
+          map.stopLocate();
+          locateBtn.classList.remove("active");
+          locateBtn.innerHTML = "&#128205; Locate Me";
+        }
+      });
+
+      map.on("locationfound", e => {
+        lastGpsPos = { lat: e.latlng.lat, lng: e.latlng.lng, accuracy: e.accuracy };
+        const radius = e.accuracy || 0;
+
+        if (!gpsAccuracyCircle) {
+          gpsAccuracyCircle = L.circle(e.latlng, {
+            radius,
+            color: "#2563eb",
+            weight: 1.5,
+            fillColor: "#3b82f6",
+            fillOpacity: 0.14,
+            interactive: false
+          }).addTo(gpsLayerGroup);
+        } else {
+          gpsAccuracyCircle.setLatLng(e.latlng).setRadius(radius);
+        }
+
+        if (!gpsMarker) {
+          gpsMarker = L.marker(e.latlng, { icon: gpsIcon, zIndexOffset: 1000 })
+            .bindPopup("")
+            .addTo(gpsLayerGroup);
+        } else {
+          gpsMarker.setLatLng(e.latlng);
+        }
+
+        const coordsStr = `${e.latlng.lat.toFixed(6)}, ${e.latlng.lng.toFixed(6)}`;
+        gpsMarker.setPopupContent(
+          `<div style="padding:10px 12px;font-size:0.84rem;"><strong>Your Live GPS</strong><br>${coordsStr}<br><span style="color:#64748b;">Accuracy: &plusmn;${Math.round(radius)} m</span></div>`
+        );
+
+        locateBtn.innerHTML = "&#128205; GPS Live";
+        gpsReadout.classList.remove("error");
+        gpsReadout.textContent = `${coordsStr} (±${Math.round(radius)}m)`;
+        copyGpsBtn.disabled = false;
+      });
+
+      map.on("locationerror", e => {
+        isLocating = false;
+        map.stopLocate();
+        locateBtn.classList.remove("active");
+        locateBtn.innerHTML = "&#128205; Locate Me";
+        gpsReadout.classList.add("error");
+        gpsReadout.textContent = `GPS error: ${e.message || "Permission denied"}`;
+      });
+
+      copyGpsBtn.addEventListener("click", async () => {
+        if (!lastGpsPos) return;
+        const text = `${lastGpsPos.lat.toFixed(6)}, ${lastGpsPos.lng.toFixed(6)}`;
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+          } else {
+            const ta = document.createElement("textarea");
+            ta.value = text;
+            ta.style.position = "fixed";
+            ta.style.opacity = "0";
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand("copy");
+            ta.remove();
+          }
+          copyGpsBtn.classList.add("copied");
+          copyGpsBtn.innerHTML = "&#10003; Copied!";
+          setTimeout(() => {
+            copyGpsBtn.classList.remove("copied");
+            copyGpsBtn.innerHTML = "&#128203; Copy GPS";
+          }, 2000);
+        } catch (_) {}
+      });
+
+      // KML Importer
+      const importKmlBtn = document.getElementById("importKmlBtn");
+      const kmlFileInput = document.getElementById("kmlFileInput");
+      const kmlStatusEl = document.getElementById("kmlStatus");
+
+      importKmlBtn.addEventListener("click", () => kmlFileInput.click());
+      kmlFileInput.addEventListener("change", e => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = ev => {
+          try {
+            const { bouldersAdded, parkingsAdded } = parseAndMergeKml(String(ev.target.result || ""), "Coast");
+            kmlStatusEl.textContent = `Loaded ${bouldersAdded} boulder(s) & ${parkingsAdded} parking pin(s) from ${file.name}`;
+            kmlStatusEl.classList.add("visible");
+            render();
+            fitVisibleMarkers();
+          } catch (err) {
+            kmlStatusEl.textContent = `KML error: ${err.message}`;
+            kmlStatusEl.classList.add("visible");
+          }
+        };
+        reader.readAsText(file);
+        e.target.value = "";
+      });
+
+      // Auto-parse embedded Coast KML if present
+      const embeddedCoastKml = document.getElementById("coast-kml")?.textContent || "";
+      if (embeddedCoastKml.trim()) {
+        try {
+          parseAndMergeKml(embeddedCoastKml, "Coast");
+        } catch (_) {}
+      }
+
+      // Download Backup HTML (baking all edits, additions, deletions, photos, and SVG topos)
+      const downloadBackupBtn = document.getElementById("downloadBackupBtn");
+      if (downloadBackupBtn) {
+        downloadBackupBtn.addEventListener("click", () => {
+          const backupState = {
+            edits: savedStore.edits,
+            created: savedStore.created,
+            deleted: savedStore.deleted,
+            photos: Object.fromEntries(customPhotosMap.entries()),
+            topos: Object.fromEntries(customToposMap.entries())
+          };
+
+          const clone = document.documentElement.cloneNode(true);
+          clone.querySelectorAll("script").forEach(sc => {
+            const src = sc.getAttribute("src") || "";
+            if (sc.hasAttribute("data-preview-only") || src.includes("_aistudio") || src.includes("@vite")) {
+              sc.remove();
+            }
+          });
+
+          const clonedMap = clone.querySelector("#map");
+          if (clonedMap) {
+            clonedMap.className = "";
+            clonedMap.removeAttribute("style");
+            clonedMap.innerHTML = "";
+          }
+
+          const clonedList = clone.querySelector("#boulderList");
+          if (clonedList) clonedList.innerHTML = "";
+
+          let bakedEl = clone.querySelector("#baked-state-json");
+          if (!bakedEl) {
+            bakedEl = document.createElement("script");
+            bakedEl.id = "baked-state-json";
+            bakedEl.type = "application/json";
+            clone.querySelector("body").appendChild(bakedEl);
+          }
+          bakedEl.textContent = JSON.stringify(backupState).replace(/<\//g, "<\\/");
+
+          const finalHtml = "<!DOCTYPE html>\n" + clone.outerHTML;
+          const blob = new Blob([finalHtml], { type: "text/html;charset=utf-8" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "sintra_map.html";
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        });
+      }
+
+      map.on("moveend zoomend", () => { if (map.hasLayer(boulderLayerGroup) && !document.querySelector(".leaflet-popup")) render(false); });
+      // --- Zoom-Aware Area & Sector Boundary Zones ---
+      const sectorZoneLayer = L.layerGroup().addTo(map);
+      const zoneColors = ["#d97706", "#2563eb", "#059669", "#7c3aed", "#db2777", "#0891b2", "#ea580c", "#4f46e5", "#16a34a"];
+
+      function computePaddedHull(points, padDeg = 0.00028) {
+        const pts = [];
+        points.forEach(pt => {
+          const lat = pt.lat, lon = pt.lon;
+          for (let i = 0; i < 12; i++) {
+            const a = (i * Math.PI) / 6;
+            pts.push({ lat: lat + Math.sin(a) * padDeg, lon: lon + Math.cos(a) * padDeg * 1.28 });
+          }
+        });
+        pts.sort((a, b) => a.lon === b.lon ? a.lat - b.lat : a.lon - b.lon);
+        const cross = (o, a, b) => (a.lon - o.lon) * (b.lat - o.lat) - (a.lat - o.lat) * (b.lon - o.lon);
+        const lower = [];
+        for (const p of pts) {
+          while (lower.length >= 2 && cross(lower.at(-2), lower.at(-1), p) <= 0) lower.pop();
+          lower.push(p);
+        }
+        const upper = [];
+        for (let i = pts.length - 1; i >= 0; i--) {
+          const p = pts.at(i);
+          while (upper.length >= 2 && cross(upper.at(-2), upper.at(-1), p) <= 0) upper.pop();
+          upper.push(p);
+        }
+        upper.pop(); lower.pop();
+        return lower.concat(upper).map(p => L.latLng(p.lat, p.lon));
+      }
+
+      function buildGradeChartPopup(areaName, sectorName, initialAreaScope) {
+        const wrap = document.createElement("div");
+        wrap.style.cssText = "min-width:240px;max-width:275px;font-family:system-ui,sans-serif;";
+        let isAreaScope = initialAreaScope;
+
+        const drawChart = () => {
+          const bLow = { label: "≤4", color: "#22c55e", items: [] };
+          const b5   = { label: "5", color: "#10b981", items: [] };
+          const b6   = { label: "6A-6C+", color: "#3b82f6", items: [] };
+          const b7   = { label: "7A-7C+", color: "#f59e0b", items: [] };
+          const b8   = { label: "8A+", color: "#ef4444", items: [] };
+          const bPrj = { label: "Proj/?", color: "#94a3b8", items: [] };
+          const buckets = [bLow, b5, b6, b7, b8, bPrj];
+
+          let boulderCount = 0;
+          boulders.forEach(b => {
+            if (b.area !== areaName) return;
+            if (!isAreaScope && sectorName && b.sector !== sectorName) return;
+            boulderCount++;
+            b.problems.forEach(p => {
+              const gr = (p.grade || "").trim().toUpperCase();
+              const entry = { bKey: b.baseKey, bName: b.name, sector: b.sector, pName: p.name, grade: p.grade || "?" };
+              if (/^[1-4]/.test(gr)) bLow.items.push(entry);
+              else if (/^5/.test(gr)) b5.items.push(entry);
+              else if (/^6/.test(gr)) b6.items.push(entry);
+              else if (/^7/.test(gr)) b7.items.push(entry);
+              else if (/^8/.test(gr)) b8.items.push(entry);
+              else bPrj.items.push(entry);
+            });
+          });
+
+          const visibleBuckets = buckets.filter(x => x.items.length > 0 || x.label !== "Proj/?");
+          const maxC = Math.max(1, ...visibleBuckets.map(x => x.items.length));
+          const totalP = buckets.reduce((s, x) => s + x.items.length, 0);
+
+          wrap.innerHTML = `
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:2px;">
+              <strong style="font-size:14px;color:#0f172a;">${escapeHtml(isAreaScope ? areaName + " Area" : sectorName)}</strong>
+              ${sectorName ? `<button type="button" class="scope-toggle-btn" style="font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;cursor:pointer;">${isAreaScope ? "Show Sector" : "Whole Area"}</button>` : ""}
+            </div>
+            <div style="font-size:11px;color:#64748b;margin-bottom:8px;">${boulderCount} boulders &bull; ${totalP} problems &bull; hover/tap bar</div>
+            <div style="display:flex;gap:5px;align-items:flex-end;padding-top:4px;border-top:1px solid #e2e8f0;">
+              ${visibleBuckets.map((x, idx) => {
+                const h = Math.round((x.items.length / maxC) * 44);
+                return `<div data-bidx="${idx}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;padding:2px;border-radius:4px;">
+                  <span style="font-size:10px;font-weight:700;color:#0f172a;">${x.items.length}</span>
+                  <div style="width:100%;height:46px;background:#f1f5f9;border-radius:4px;display:flex;align-items:flex-end;overflow:hidden;">
+                    <div style="width:100%;height:${h}px;background:${x.color};border-radius:3px 3px 0 0;"></div>
+                  </div>
+                  <span style="font-size:9px;font-weight:600;color:#475569;white-space:nowrap;">${x.label}</span>
+                </div>`;
+              }).join("")}
+            </div>
+            <div class="grade-drill-list" style="margin-top:8px;max-height:145px;overflow-y:auto;border-top:1px solid #e2e8f0;padding-top:6px;display:none;"></div>
+          `;
+
+          const toggleBtn = wrap.querySelector(".scope-toggle-btn");
+          if (toggleBtn) toggleBtn.onclick = (ev) => { ev.stopPropagation(); isAreaScope = !isAreaScope; drawChart(); };
+
+          const listEl = wrap.querySelector(".grade-drill-list");
+          const showBucket = (idx) => {
+            const bk = visibleBuckets[idx];
+            if (!bk) return;
+            wrap.querySelectorAll("[data-bidx]").forEach(el => el.style.background = el.dataset.bidx == idx ? "#e2e8f0" : "transparent");
+            listEl.style.display = "block";
+            if (bk.items.length === 0) { listEl.innerHTML = `<div style="font-size:11px;color:#94a3b8;">No ${bk.label} problems</div>`; return; }
+            listEl.innerHTML = `<div style="font-size:10px;font-weight:700;color:#475569;margin-bottom:4px;">${bk.label} (${bk.items.length}) — tap to jump:</div>` +
+              bk.items.map(it => `<div data-jump="${escapeHtml(it.bKey)}" style="display:flex;justify-content:space-between;align-items:center;gap:6px;padding:4px 6px;margin-bottom:3px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:5px;cursor:pointer;font-size:11px;"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><strong style="color:#0f172a;">${escapeHtml(it.pName || it.bName)}</strong> <span style="color:#64748b;">(${escapeHtml(it.bName)}${isAreaScope ? " · " + escapeHtml(it.sector) : ""})</span></div><span style="font-weight:700;color:#d97706;flex-shrink:0;">${escapeHtml(it.grade)}</span></div>`).join("");
+            listEl.querySelectorAll("[data-jump]").forEach(row => {
+              row.onclick = () => {
+                const targetB = boulders.find(x => x.baseKey === row.dataset.jump);
+                if (!targetB || targetB.lat === null) return;
+                map.closePopup(); map.setView([targetB.displayLat, targetB.displayLon], 18);
+                setTimeout(() => { render(false); const m = activeMarkers.find(mk => mk._boulderRef && mk._boulderRef.baseKey === targetB.baseKey); if (m) m.openPopup(); }, 120);
+              };
+            });
+          };
+          wrap.querySelectorAll("[data-bidx]").forEach(col => { col.onmouseenter = () => showBucket(col.dataset.bidx); col.onclick = () => showBucket(col.dataset.bidx); });
+        };
+        drawChart();
+        return wrap;
+      }
+
+      function renderSectorZones() {
+        sectorZoneLayer.clearLayers();
+        const toggle = document.getElementById("showZonesToggle");
+        if (toggle && !toggle.checked) return;
+        const areaVal = areaSelect.value, sectorVal = sectorSelect.value, zoom = map.getZoom();
+        const areaGroups = new Map(), sectorGroups = new Map();
+
+        boulders.forEach(b => {
+          if (b.lat === null || b.lon === null) return;
+          if (areaVal !== "ALL" && b.area !== areaVal) return;
+          if (sectorVal !== "ALL" && b.sector !== sectorVal) return;
+          if (!areaGroups.has(b.area)) areaGroups.set(b.area, { area: b.area, pts: [], maxLat: -90, latSum: 0, lonSum: 0 });
+          const ag = areaGroups.get(b.area);
+          ag.pts.push({ lat: b.displayLat, lon: b.displayLon });
+          if (b.displayLat > ag.maxLat) ag.maxLat = b.displayLat;
+          ag.latSum += b.displayLat;
+          ag.lonSum += b.displayLon;
+          const k = `${b.area}||${b.sector}`;
+          if (!sectorGroups.has(k)) sectorGroups.set(k, { area: b.area, sector: b.sector, pts: [] });
+          sectorGroups.get(k).pts.push({ lat: b.displayLat, lon: b.displayLon });
+        });
+
+        // 1. Area View (< 16: click to zoom straight in) vs Area Header Badge (>= 16: click for Area grade chart)
+        areaGroups.forEach(ag => {
+          const avgLon = ag.lonSum / ag.pts.length;
+          const avgLat = ag.latSum / ag.pts.length;
+          const zoomToArea = () => {
+            const bounds = L.latLngBounds(ag.pts.map(p => [p.lat, p.lon]));
+            map.fitBounds(bounds, { padding: L.point(30, 30), maxZoom: 17 });
+          };
+
+          if (zoom < 16 && sectorVal === "ALL") {
+            const areaPoly = L.polygon(computePaddedHull(ag.pts, 0.00085), {
+              color: "#f59e0b", weight: 2.5, dashArray: "8, 6", fillColor: "#f59e0b", fillOpacity: 0.15, interactive: true
+            });
+            areaPoly.on("click", zoomToArea);
+            areaPoly.addTo(sectorZoneLayer);
+          }
+
+          const badgeLat = (zoom < 16 && sectorVal === "ALL") ? avgLat : (ag.maxLat + 0.0006);
+          const areaBadge = L.marker([badgeLat, avgLon], {
+            icon: L.divIcon({
+              className: "",
+              html: `<div class="area-zone-label" style="transform:translate(-50%,-50%);display:inline-block;">${escapeHtml(ag.area)}</div>`,
+              iconSize: L.point(0, 0)
+            })
+          });
+          if (zoom < 16 && sectorVal === "ALL") {
+            areaBadge.on("click", zoomToArea);
+          } else {
+            areaBadge.bindPopup(() => buildGradeChartPopup(ag.area, null, true));
+          }
+          areaBadge.addTo(sectorZoneLayer);
+        });
+
+        // 2. Sector Zones (>= 16) with Pixel-Box Collision Filtering (zero overlapping text)
+        if (zoom >= 16 || sectorVal !== "ALL") {
+          const sortedSectors = Array.from(sectorGroups.values()).sort((a, b) => b.pts.length - a.pts.length);
+          const placedBoxes = [];
+          let idx = 0;
+          sortedSectors.forEach(g => {
+            const color = zoneColors[idx++ % zoneColors.length];
+            const hull = computePaddedHull(g.pts, 0.00028);
+            const poly = L.polygon(hull, {
+              color: color, weight: 2, dashArray: "6, 6", fillColor: color, fillOpacity: 0.16, interactive: true
+            });
+            poly.bindPopup(() => buildGradeChartPopup(g.area, g.sector, false));
+            poly.addTo(sectorZoneLayer);
+
+            // Check screen pixel bounding box before placing permanent label
+            const center = poly.getBounds().getCenter();
+            const pt = map.latLngToContainerPoint(center);
+            const halfW = (g.sector.length * 3.8) + 8;
+            const halfH = 11;
+            const box = { left: pt.x - halfW, right: pt.x + halfW, top: pt.y - halfH, bottom: pt.y + halfH };
+            const overlaps = placedBoxes.some(b => !(box.right < b.left || box.left > b.right || box.bottom < b.top || box.top > b.bottom));
+            if (!overlaps || sectorVal !== "ALL") {
+              placedBoxes.push(box);
+              poly.bindTooltip(escapeHtml(g.sector), { permanent: true, direction: "center", className: "sector-zone-label" });
+            }
+          });
+        }
+      }
+
+      const zonesToggleEl = document.getElementById("showZonesToggle");
+      if (zonesToggleEl) zonesToggleEl.addEventListener("change", renderSectorZones);
+      areaSelect.addEventListener("change", renderSectorZones);
+      sectorSelect.addEventListener("change", renderSectorZones);
+      map.on("zoomend", () => { if (!document.querySelector(".leaflet-popup")) renderSectorZones(); });
+      renderSectorZones();
+
+      // Initial Render
+      const qsInput=document.getElementById("quickSearchInput"),qsClear=document.getElementById("quickSearchClear"),qsResults=document.getElementById("quickSearchResults");let qsMatches=[];
+      const normStr=s=>String(s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+      function runQuickSearch(){
+        const raw=qsInput.value.trim(),q=normStr(raw);qsClear.style.display=raw?"block":"none";
+        if(!q){qsResults.style.display="none";qsResults.innerHTML="";qsMatches=[];return;}
+        const items=[],areas=new Map(),sectors=new Map();
+        boulders.forEach(b=>{if(b.lat===null||b.lon===null)return;if(!areas.has(b.area))areas.set(b.area,[]);areas.get(b.area).push(L.latLng(b.displayLat,b.displayLon));const k=b.area+"||"+b.sector;if(!sectors.has(k))sectors.set(k,{area:b.area,sector:b.sector,pts:[]});sectors.get(k).pts.push(L.latLng(b.displayLat,b.displayLon));});
+        areas.forEach((pts,a)=>{if(normStr(a).includes(q))items.push({type:"Area",bg:"#0f172a",fg:"#fbbf24",title:a,sub:pts.length+" boulders",go:()=>map.fitBounds(L.latLngBounds(pts),{padding:L.point(30,30),maxZoom:16})});});
+        sectors.forEach(s=>{if(normStr(s.sector).includes(q))items.push({type:"Sector",bg:"#dbeafe",fg:"#1e40af",title:s.sector,sub:s.area+" · "+s.pts.length+" boulders",go:()=>map.fitBounds(L.latLngBounds(s.pts),{padding:L.point(35,35),maxZoom:17})});});
+        boulders.forEach(b=>{if(b.lat===null||b.lon===null)return;const bm=normStr(b.name).includes(q),pm=b.problems.find(p=>normStr(p.name).includes(q));if(bm||pm)items.push({type:bm?"Boulder":"Problem",bg:"#fef3c7",fg:"#92400e",title:bm?b.name:pm.name+" ("+b.name+")",sub:b.area+" · "+b.sector,go:()=>{map.setView(L.latLng(b.displayLat,b.displayLon),18);setTimeout(()=>{render(false);const m=activeMarkers.find(mk=>mk._boulderRef&&mk._boulderRef.baseKey===b.baseKey);if(m)m.openPopup();},140);}});});
+        qsMatches=items.slice(0,18);qsResults.style.display="block";
+        qsResults.innerHTML=qsMatches.length?qsMatches.map((it,i)=>`<div class="qs-item" data-qs="${i}"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><strong style="color:#0f172a">${escapeHtml(it.title)}</strong><div style="font-size:10px;color:#64748b">${escapeHtml(it.sub)}</div></div><span class="qs-tag" style="background:${it.bg};color:${it.fg}">${it.type}</span></div>`).join(""):`<div style="padding:10px 12px;font-size:12px;color:#64748b">No matches found</div>`;
+        qsResults.querySelectorAll("[data-qs]").forEach(r=>r.onclick=()=>{const c=qsMatches.at(Number(r.dataset.qs));qsResults.style.display="none";if(c)c.go();});
+      }
+      qsInput.addEventListener("input",runQuickSearch);qsInput.addEventListener("focus",runQuickSearch);
+      qsInput.addEventListener("keydown",e=>{if(e.key==="Enter"&&qsMatches.length){e.preventDefault();qsResults.style.display="none";qsMatches.at(0).go();}});
+      qsClear.addEventListener("click",()=>{qsInput.value="";runQuickSearch();});
+      document.addEventListener("click",e=>{if(!document.getElementById("quickSearchBox").contains(e.target))qsResults.style.display="none";});
+      // --- Multi-Photo & Per-Photo Vector Topo Upgrade ---
+      const activePhotoIdxMap = new Map();
+
+      function getBoulderPhotoList(boulder) {
+        const bKey = `${boulder.sector}||${boulder.name}`;
+        const stored = customPhotosMap.get(bKey);
+        const baseImg = boulder.page_image ? (boulder.page_image.includes("/") ? boulder.page_image : `Malveira/${boulder.page_image}`) : "";
+        let list = [];
+        if (Array.isArray(stored)) list = stored.slice();
+        else if (typeof stored === "string" && stored) list = [stored];
+        else if (baseImg) list = [baseImg];
+        return list;
+      }
+
+      function getPhotoTopos(bKey, idx) {
+        const raw = customToposMap.get(bKey);
+        if (!raw) return [];
+        if (Array.isArray(raw)) return idx === 0 ? raw : [];
+        return Array.isArray(raw[String(idx)]) ? raw[String(idx)] : [];
+      }
+
+      function setPhotoTopos(bKey, idx, lines) {
+        const raw = customToposMap.get(bKey);
+        const obj = (!raw || Array.isArray(raw)) ? { "0": Array.isArray(raw) ? raw : [] } : Object.assign({}, raw);
+        obj[String(idx)] = lines;
+        customToposMap.set(bKey, obj);
+        if (typeof saveBoulderTopos === "function") return saveBoulderTopos(bKey, obj);
+      }
+
+      const _origBuildStage = buildBoulderPhotoStage;
+      buildBoulderPhotoStage = function(boulder) {
+        const bKey = `${boulder.sector}||${boulder.name}`;
+        const list = getBoulderPhotoList(boulder);
+        let idx = activePhotoIdxMap.get(bKey) || 0;
+        if (idx >= list.length) idx = Math.max(0, list.length - 1);
+        activePhotoIdxMap.set(bKey, idx);
+
+        const imgSrc = list.at(idx) || "";
+        const topos = getPhotoTopos(bKey, idx);
+        const hasTopos = topos.length > 0;
+        const altText = escapeHtml(boulder.name);
+
+        const tabsHtml = list.length > 1 ? `<div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap;">` +
+          list.map((_, i) => `<button type="button" class="mp-tab-btn" data-idx="${i}" style="padding:3px 9px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;border:1px solid ${i === idx ? "#d97706" : "#cbd5e1"};background:${i === idx ? "#fef3c7" : "#f8fafc"};color:${i === idx ? "#92400e" : "#334155"};">Photo ${i + 1}</button>`).join("") +
+          `</div>` : "";
+
+        const stageInner = imgSrc ? `
+          <div class="popup-photo-stage">
+            <img class="popup-boulder-img" src="${escapeHtml(encodeURI(imgSrc))}" alt="${altText}" referrerpolicy="no-referrer" onclick="window.openPhotoLightbox('${escapeHtml(encodeURI(imgSrc))}', '${altText}', '${escapeHtml(bKey)}')" />
+            <svg class="topo-svg-overlay${hasTopos ? "" : " no-topos"}" viewBox="0 0 1000 1000" preserveAspectRatio="none">
+              ${renderVectorTopoMarkup(topos, null)}
+            </svg>
+          </div>` : `<div class="popup-photo-empty">No photo yet &mdash; upload a photo below.</div>`;
+
+        const drawBtnHtml = imgSrc ? `<button type="button" class="popup-draw-btn" data-boulder-key="${escapeHtml(bKey)}">✏️ Draw Climb Line</button>` : "";
+        const delPhotoBtn = list.length > 0 ? `<button type="button" class="mp-del-photo-btn" style="font-size:11px;color:#dc2626;background:none;border:none;cursor:pointer;font-weight:700;">Remove Photo ${idx + 1}</button>` : "";
+
+        return `
+          <div class="popup-thumb-wrap" data-boulder-key="${escapeHtml(bKey)}">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div class="popup-thumb-label">Photos (${list.length})</div>
+              ${delPhotoBtn}
+            </div>
+            ${tabsHtml}
+            <div class="popup-photo-stage-wrap">${stageInner}</div>
+            <div class="popup-photo-actions" style="margin-top:6px;">
+              <div class="popup-photo-btn-group" style="display:flex;gap:6px;flex-wrap:wrap;">
+                <label class="popup-photo-btn" style="cursor:pointer;">
+                  ➕ Add Photo
+                  <input type="file" accept="image/*" class="mp-add-input" style="display:none;" />
+                </label>
+                ${imgSrc ? `<label class="popup-photo-btn" style="cursor:pointer;">🔄 Replace<input type="file" accept="image/*" class="mp-rep-input" style="display:none;" /></label>` : ""}
+                ${drawBtnHtml}
+              </div>
+            </div>
+          </div>`;
+      };
+
+      const _origWire = wirePopupControls;
+      wirePopupControls = function(popup, boulder) {
+        _origWire(popup, boulder);
+        const el = popup.getElement();
+        if (!el) return;
+        const bKey = `${boulder.sector}||${boulder.name}`;
+        const refreshPopup = () => {
+          popup.setContent(buildBoulderPopup(boulder, gradeFilterEl.value, searchFilterEl.value.trim().toLowerCase()));
+          popup.update();
+          wirePopupControls(popup, boulder);
+        };
+
+        el.querySelectorAll(".mp-tab-btn").forEach(btn => {
+          btn.onclick = () => { activePhotoIdxMap.set(bKey, parseInt(btn.dataset.idx, 10)); refreshPopup(); };
+        });
+
+        const addInp = el.querySelector(".mp-add-input");
+        if (addInp) addInp.onchange = async ev => {
+          const f = ev.target.files && ev.target.files.item(0);
+          if (!f) return;
+          const dataUrl = await readAndResizePhoto(f);
+          const list = getBoulderPhotoList(boulder);
+          list.push(dataUrl);
+          customPhotosMap.set(bKey, list);
+          if (typeof saveBoulderPhoto === "function") await saveBoulderPhoto(bKey, list);
+          activePhotoIdxMap.set(bKey, list.length - 1);
+          refreshPopup();
+        };
+
+        const repInp = el.querySelector(".mp-rep-input");
+        if (repInp) repInp.onchange = async ev => {
+          const f = ev.target.files && ev.target.files.item(0);
+          if (!f) return;
+          const dataUrl = await readAndResizePhoto(f);
+          const list = getBoulderPhotoList(boulder);
+          const idx = activePhotoIdxMap.get(bKey) || 0;
+          list.splice(idx, 1, dataUrl);
+          customPhotosMap.set(bKey, list);
+          if (typeof saveBoulderPhoto === "function") await saveBoulderPhoto(bKey, list);
+          refreshPopup();
+        };
+
+        const delBtn = el.querySelector(".mp-del-photo-btn");
+        if (delBtn) delBtn.onclick = async () => {
+          const list = getBoulderPhotoList(boulder);
+          const idx = activePhotoIdxMap.get(bKey) || 0;
+          list.splice(idx, 1);
+          customPhotosMap.set(bKey, list);
+          if (typeof saveBoulderPhoto === "function") await saveBoulderPhoto(bKey, list);
+          activePhotoIdxMap.set(bKey, Math.max(0, idx - 1));
+          refreshPopup();
+        };
+      };
+
+      const _origOpenDraw = openDrawLineModal;
+      openDrawLineModal = function(boulder, popup, imgSrc) {
+        const bKey = `${boulder.sector}||${boulder.name}`;
+        const idx = activePhotoIdxMap.get(bKey) || 0;
+        const list = getBoulderPhotoList(boulder);
+        const activeSrc = list.at(idx) || imgSrc;
+        _origOpenDraw(boulder, popup, activeSrc);
+        localTopos = JSON.parse(JSON.stringify(getPhotoTopos(bKey, idx)));
+        renderDrawSvg();
+      };
+
+      drawSaveBtn.onclick = async () => {
+        if (!drawActiveBoulder) return;
+        const bKey = `${drawActiveBoulder.sector}||${drawActiveBoulder.name}`;
+        const idx = activePhotoIdxMap.get(bKey) || 0;
+        await setPhotoTopos(bKey, idx, localTopos);
+        if (drawActivePopup) {
+          drawActivePopup.setContent(buildBoulderPopup(drawActiveBoulder, gradeFilterEl.value, searchFilterEl.value.trim().toLowerCase()));
+          drawActivePopup.update();
+          wirePopupControls(drawActivePopup, drawActiveBoulder);
+        }
+        closeDrawLineModal();
+      };
+
+      // Load baked backup state if present
+      try {
+        const bakedNode = document.getElementById("baked-state-json");
+        if (bakedNode && bakedNode.textContent.trim()) {
+          const bs = JSON.parse(bakedNode.textContent);
+          if (bs.edits) Object.assign(savedStore.edits, bs.edits);
+          if (bs.created && Array.isArray(bs.created)) {
+            bs.created.forEach(c => { if (!savedStore.created.some(x => x.baseKey === c.baseKey)) savedStore.created.push(c); });
+          }
+          if (bs.deleted && Array.isArray(bs.deleted)) {
+            bs.deleted.forEach(d => { if (!savedStore.deleted.includes(d)) savedStore.deleted.push(d); });
+          }
+          if (bs.photos) Object.entries(bs.photos).forEach(([k, v]) => customPhotosMap.set(k, v));
+          if (bs.topos) Object.entries(bs.topos).forEach(([k, v]) => customToposMap.set(k, v));
+          if (typeof refreshCollections === "function") refreshCollections();
+        }
+      } catch (e) { console.warn("Baked state parse:", e); }
+
+      // --- Full-Height SVG Drawing + Interactive Lightbox with Hover Problem/Grade Tooltip ---
+      if (typeof drawBgImg !== "undefined" && typeof drawSvg !== "undefined") {
+        const stageParent = drawBgImg.parentElement;
+        if (stageParent) {
+          stageParent.style.position = "relative";
+          stageParent.style.display = "inline-block";
+          stageParent.style.lineHeight = "0";
+        }
+        drawSvg.style.position = "absolute";
+        drawSvg.style.top = "0";
+        drawSvg.style.left = "0";
+        drawSvg.style.width = "100%";
+        drawSvg.style.height = "100%";
+        drawSvg.style.pointerEvents = "auto";
+        drawSvg.style.touchAction = "none";
+
+        getSvgPoint = function(ev) {
+          const rect = drawBgImg.getBoundingClientRect();
+          const cx = ev.clientX !== undefined ? ev.clientX : (ev.touches && ev.touches.item(0) ? ev.touches.item(0).clientX : rect.left);
+          const cy = ev.clientY !== undefined ? ev.clientY : (ev.touches && ev.touches.item(0) ? ev.touches.item(0).clientY : rect.top);
+          const x = Math.max(0, Math.min(1000, ((cx - rect.left) / Math.max(1, rect.width)) * 1000));
+          const y = Math.max(0, Math.min(1000, ((cy - rect.top) / Math.max(1, rect.height)) * 1000));
+          return { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 };
+        };
+      }
+
+      window.openPhotoLightbox = function(imgSrc, altText, bKey) {
+        let lb = document.getElementById("customTopoLightbox");
+        if (!lb) {
+          lb = document.createElement("div");
+          lb.id = "customTopoLightbox";
+          lb.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(10,15,25,0.92);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px;font-family:system-ui,sans-serif;";
+          document.body.appendChild(lb);
+        }
+
+        const boulder = boulders.find(b => `${b.sector}||${b.name}` === bKey);
+        const photoIdx = activePhotoIdxMap.get(bKey) || 0;
+        const topos = getPhotoTopos(bKey, photoIdx);
+        const problems = boulder ? boulder.problems : [];
+
+        lb.innerHTML = `
+          <button type="button" id="ctlCloseBtn" style="position:fixed;top:16px;right:20px;width:40px;height:40px;border-radius:999px;border:1px solid rgba(255,255,255,0.3);background:rgba(255,255,255,0.15);color:#fff;font-size:20px;cursor:pointer;z-index:10001;">✕</button>
+          <div id="ctlHoverTag" style="position:fixed;top:18px;left:50%;transform:translateX(-50%);background:#0f172a;color:#fff;border:1.5px solid #f59e0b;border-radius:999px;padding:6px 14px;font-size:13px;font-weight:800;display:none;z-index:10001;white-space:nowrap;"></div>
+          <div style="position:relative;display:inline-block;line-height:0;overflow:visible;">
+            <img src="${escapeHtml(imgSrc)}" alt="${escapeHtml(altText)}" style="width:auto;height:auto;max-width:90vw;max-height:76vh;border-radius:10px;display:block;" />
+            <svg id="ctlSvg" viewBox="0 0 1000 1000" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%;overflow:visible;">
+              ${renderVectorTopoMarkup(topos, null)}
+            </svg>
+          </div>
+          <div style="margin-top:10px;color:#e2e8f0;font-size:13px;font-weight:700;text-align:center;">
+            ${escapeHtml(altText)}${topos.length ? " — hover or tap a line for name & grade" : ""}
+          </div>
+        `;
+        lb.style.display = "flex";
+
+        const closeLb = () => { lb.style.display = "none"; };
+        document.getElementById("ctlCloseBtn").onclick = closeLb;
+        lb.onclick = ev => { if (ev.target === lb) closeLb(); };
+
+        const hoverTag = document.getElementById("ctlHoverTag");
+        const svgEl = document.getElementById("ctlSvg");
+        svgEl.querySelectorAll(".topo-svg-group").forEach(grp => {
+          grp.style.cursor = "pointer";
+          const pIdx = parseInt(grp.dataset.probIdx, 10);
+          const prob = problems.at(pIdx);
+          const label = prob ? `${pIdx + 1}. ${prob.name || "Unnamed"} (${prob.grade || "?"})` : `Problem #${pIdx + 1}`;
+          const activate = () => {
+            svgEl.querySelectorAll(".topo-svg-group").forEach(g => g.style.opacity = g === grp ? "1" : "0.35");
+            grp.querySelectorAll("path").forEach(p => { if (!p.dataset.origW) p.dataset.origW = p.getAttribute("stroke-width") || "6"; p.setAttribute("stroke-width", String(Number(p.dataset.origW) * 1.55)); });
+            hoverTag.textContent = label;
+            hoverTag.style.display = "block";
+          };
+          const reset = () => {
+            svgEl.querySelectorAll(".topo-svg-group").forEach(g => g.style.opacity = "1");
+            grp.querySelectorAll("path").forEach(p => { if (p.dataset.origW) p.setAttribute("stroke-width", p.dataset.origW); });
+            hoverTag.style.display = "none";
+          };
+          grp.addEventListener("mouseenter", activate);
+          grp.addEventListener("mouseleave", reset);
+          grp.addEventListener("click", ev => { ev.stopPropagation(); activate(); });
+        });
+      };
+
+      // --- Exact Pixel-Box Sync for Draw Modal & Enlarged Lightbox ---
+      if (typeof drawBgImg !== "undefined" && typeof drawSvg !== "undefined") {
+        const syncDrawBox = () => {
+          const p = drawBgImg.parentElement;
+          if (p) {
+            p.style.cssText = "position:relative;display:inline-block;margin:0 auto;padding:0;line-height:0;overflow:visible;";
+          }
+          drawBgImg.style.cssText = "display:block;width:auto;height:auto;max-width:86vw;max-height:56vh;object-fit:contain;margin:0;padding:0;";
+          drawSvg.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;max-height:none;pointer-events:auto;touch-action:none;overflow:visible;";
+        };
+        drawBgImg.addEventListener("load", syncDrawBox);
+        syncDrawBox();
+      }
+
+      // Initial Render
+      render();
+      fitVisibleMarkers();
+      loadAllSavedStorage().then(() => render(false));
+    })();
+  </script>
+
+<div style="position:fixed;bottom:14px;left:50%;transform:translateX(-50%);z-index:1500;display:flex;gap:8px;background:#0f172a;padding:7px 12px;border-radius:999px;box-shadow:0 4px 16px rgba(0,0,0,.35);">
+  <button onclick="document.getElementById('sBox').style.display='flex'" style="background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;border:none;border-radius:999px;padding:6px 13px;font-size:12px;font-weight:700;cursor:pointer;">📷 Scan Guidebook</button>
+  <button onclick="document.getElementById('jBox').style.display='flex'" style="background:#d97706;color:#fff;border:none;border-radius:999px;padding:6px 13px;font-size:12px;font-weight:700;cursor:pointer;">💾 JSON Data</button>
 </div>
-<div id="scanBox" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.72);z-index:2500;align-items:center;justify-content:center;padding:12px;">
-  <div style="background:#fff;border-radius:12px;max-width:480px;width:100%;max-height:88vh;overflow-y:auto;padding:16px;font-family:sans-serif;">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-      <strong>📷 Guidebook Scanner (Free Tier Safe)</strong>
-      <button onclick="document.getElementById('scanBox').style.display='none'" style="border:none;background:#e2e8f0;border-radius:6px;padding:4px 9px;cursor:pointer;">✕</button>
-    </div>
-    <div style="display:flex;gap:6px;margin-bottom:8px;">
-      <input id="gKey" type="password" placeholder="Gemini API Key" style="flex:1;padding:6px;border:1px solid #cbd5e1;border-radius:6px;">
-      <button onclick="localStorage.setItem('g_key',document.getElementById('gKey').value.trim());alert('Saved!')" style="padding:6px 10px;border-radius:6px;border:1px solid #cbd5e1;">Save</button>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
-      <label style="padding:9px;background:#0f172a;color:#fff;border-radius:8px;font-size:12px;font-weight:700;text-align:center;cursor:pointer;">📸 Snap Page<input type="file" accept="image/*" capture="environment" style="display:none" onchange="qPages(this.files)"></label>
-      <label style="padding:9px;background:#f1f5f9;color:#0f172a;border:1px solid #cbd5e1;border-radius:8px;font-size:12px;font-weight:700;text-align:center;cursor:pointer;">🖼️ Gallery<input type="file" accept="image/*" multiple style="display:none" onchange="qPages(this.files)"></label>
-    </div>
-    <div id="qCnt" style="font-size:12px;font-weight:700;color:#2563eb;margin-bottom:8px;">0 pages queued</div>
-    <button onclick="runScan()" style="width:100%;padding:10px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;">✨ Extract Boulders (1 Request)</button>
-    <pre id="sOut" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px;font-size:11px;max-height:200px;overflow:auto;margin-top:8px;white-space:pre-wrap;"></pre>
+
+<div id="jBox" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:2500;align-items:center;justify-content:center;padding:12px;">
+  <div style="background:#fff;border-radius:12px;max-width:440px;width:100%;padding:16px;font-family:sans-serif;">
+    <div style="display:flex;justify-content:space-between;margin-bottom:8px;"><strong>💾 JSON Import / Export</strong><button onclick="document.getElementById('jBox').style.display='none'">✕</button></div>
+    <p style="font-size:12px;color:#475569;margin:0 0 8px;">Import <code>sintra_seed_v28.json</code> (or Northern Portugal JSON) onto your phone:</p>
+    <input type="file" accept=".json,application/json" onchange="impJson(this.files)" style="width:100%;margin-bottom:10px;">
   </div>
 </div>
+
+<div id="sBox" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:2500;align-items:center;justify-content:center;padding:12px;">
+  <div style="background:#fff;border-radius:12px;max-width:460px;width:100%;max-height:85vh;overflow-y:auto;padding:16px;font-family:sans-serif;">
+    <div style="display:flex;justify-content:space-between;margin-bottom:8px;"><strong>📷 Guidebook Scanner</strong><button onclick="document.getElementById('sBox').style.display='none'">✕</button></div>
+    <div style="display:flex;gap:6px;margin-bottom:8px;"><input id="gK" type="password" placeholder="Gemini API Key" style="flex:1;padding:6px;border:1px solid #ccc;border-radius:6px;"><button onclick="localStorage.setItem('gk',document.getElementById('gK').value.trim());alert('Saved')">Save</button></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+      <label style="padding:9px;background:#0f172a;color:#fff;border-radius:8px;font-size:12px;font-weight:700;text-align:center;cursor:pointer;">📸 Snap Page<input type="file" accept="image/*" capture="environment" style="display:none" onchange="qPg(this.files)"></label>
+      <label style="padding:9px;background:#f1f5f9;border:1px solid #ccc;border-radius:8px;font-size:12px;font-weight:700;text-align:center;cursor:pointer;">🖼️ Gallery<input type="file" accept="image/*" multiple style="display:none" onchange="qPg(this.files)"></label>
+    </div>
+    <div id="qInf" style="font-size:12px;font-weight:700;color:#2563eb;margin-bottom:8px;">0 pages queued</div>
+    <button onclick="runSc()" style="width:100%;padding:10px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;">✨ Extract Boulders</button>
+    <pre id="sOut" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px;font-size:11px;max-height:180px;overflow:auto;margin-top:8px;white-space:pre-wrap;"></pre>
+  </div>
+</div>
+
 <script>
-document.getElementById('gKey').value = localStorage.getItem('g_key') || '';
+document.getElementById('gK').value = localStorage.getItem('gk') || '';
 window.pgs = [];
-window.qPages = async function(fl) {
+window.qPg = async function(fl) {
   for (const f of Array.from(fl||[])) {
-    const b64 = await new Promise(res => { const r = new FileReader(); r.onload = () => { const im = new Image(); im.onload = () => { const s = Math.min(1, 1000/Math.max(im.width,im.height)); const c = document.createElement('canvas'); c.width=im.width*s; c.height=im.height*s; c.getContext('2d').drawImage(im,0,0,c.width,c.height); res(c.toDataURL('image/jpeg',0.72).slice(23)); }; im.src=r.result; }; r.readAsDataURL(f); });
-    window.pgs.push(b64);
+    const b = await new Promise(res => { const r = new FileReader(); r.onload = () => { const im = new Image(); im.onload = () => { const s = Math.min(1, 1000/Math.max(im.width,im.height)); const c = document.createElement('canvas'); c.width=im.width*s; c.height=im.height*s; c.getContext('2d').drawImage(im,0,0,c.width,c.height); res(c.toDataURL('image/jpeg',0.72).slice(23)); }; im.src=r.result; }; r.readAsDataURL(f); });
+    window.pgs.push(b);
   }
-  document.getElementById('qCnt').textContent = window.pgs.length + ' page(s) queued';
+  document.getElementById('qInf').textContent = window.pgs.length + ' page(s) queued';
 };
-window.runScan = async function() {
-  const k = document.getElementById('gKey').value.trim(), out = document.getElementById('sOut');
-  if (!k || !window.pgs.length) return alert('Enter API key and queue at least 1 photo.');
+window.runSc = async function() {
+  const k = document.getElementById('gK').value.trim(), out = document.getElementById('sOut');
+  if (!k || !window.pgs.length) return alert('Add API key and at least 1 photo.');
   out.textContent = '⏳ Extracting ' + window.pgs.length + ' page(s)...';
-  const host = ['generativelanguage','googleapis','com'].join('.');
-  const r = await fetch('https://' + host + '/v1beta/models/gemini-3.8-flash-lite:generateContent?key=' + encodeURIComponent(k), {
+  const h = ['generativelanguage','googleapis','com'].join('.');
+  const r = await fetch('https://' + h + '/v1beta/models/gemini-3.8-flash-lite:generateContent?key=' + encodeURIComponent(k), {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ contents: [{ parts: [{ text: 'Extract boulders, problems, grades, coordinates, and sector borders as valid JSON: {"boulders":[{"area":"","sector":"","name":"","lat":null,"lon":null,"problems":[{"name":"","grade":"","desc":""}]}]}' }, ...window.pgs.map(d => ({ inline_data: { mime_type: 'image/jpeg', data: d } }))] }], generationConfig: { responseMimeType: 'application/json' } })
   });
   const j = await r.json();
   out.textContent = j.candidates?.?.content?.parts?.?.text || JSON.stringify(j, null, 2);
 };
+window.impJson = async function(fl) {
+  if (!fl || !fl) return;
+  const data = JSON.parse(await fl.text());
+  const csvEl = document.getElementById('csv-data');
+  const esc = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  let rows = '';
+  (data.boulders || []).forEach(b => {
+    (b.problems && b.problems.length ? b.problems : [{name:'',grade:''}]).forEach(p => {
+      rows += '\n' + ['boulder', b.area||'Malveira', b.sector||'', b.name||'', p.name||'', p.grade||'', b.lat??'', b.lon??'', b.estimated?'true':'false', b.description||'', b.comments||'', b.topo_url||'', b.image_url||''].map(esc).join(',');
+    });
+  });
+  (data.parkings || []).forEach(p => {
+    rows += '\n' + ['parking', p.area||'Malveira', p.sector||'', p.name||'Parking', '', '', p.lat, p.lon, 'false', p.description||'', '', p.topo_url||'', ''].map(esc).join(',');
+  });
+  if (csvEl) csvEl.textContent += rows;
+  alert('Loaded ' + (data.boulders||[]).length + ' boulders! Click "Download Backup HTML" in the sidebar to save offline.');
+  document.getElementById('jBox').style.display = 'none';
+};
 </script>
-
-</body></html>
+</body>
+</html>

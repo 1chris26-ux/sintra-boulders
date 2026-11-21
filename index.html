@@ -7689,7 +7689,7 @@ window.runSc = async function() {
     const h = ['generativelanguage', 'googleapis', 'com'].join('.');
     const prompt = 'Extract boulders, problems, grades, GPS coordinates, and sector borders as valid JSON: {"boulders":[{"area":"","sector":"","name":"","lat":null,"lon":null,"problems":[{"name":"","grade":"","desc":""}]}]}';
     const parts = [{ text: prompt }].concat(window.pgs.map(d => ({ inline_data: { mime_type: 'image/jpeg', data: d } })));
-    const r = await fetch('https://' + h + '/v1beta/models/gemini-3.8-flash-lite:generateContent?key=' + encodeURIComponent(k), {
+    const r = await fetch('https://' + h + '/v1beta/models/gemini-3.8-flash:generateContent?key=' + encodeURIComponent(k), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contents: [{ parts: parts }], generationConfig: { responseMimeType: 'application/json' } })
     });

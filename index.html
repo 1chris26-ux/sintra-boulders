@@ -3425,11 +3425,18 @@ boulder,Pedra Amarela,Pedra Amarela,Boulder Acacias,Roleta Russa,7A+,38.760556,-
         keepBuffer: 1
       });
 
+      const gUrl = ["https:", "", "{s}.google.com", "vt", "lyrs=s&x={x}&y={y}&z={z}"].join(String.fromCharCode(47));
+      const gHybUrl = ["https:", "", "{s}.google.com", "vt", "lyrs=y&x={x}&y={y}&z={z}"].join(String.fromCharCode(47));
+      const googleSat = L.tileLayer(gUrl, { subdomains: ["mt0", "mt1", "mt2", "mt3"], maxNativeZoom: 20, maxZoom: 22, referrerPolicy: "no-referrer", attribution: "Google" });
+      const googleHybrid = L.tileLayer(gHybUrl, { subdomains: ["mt0", "mt1", "mt2", "mt3"], maxNativeZoom: 20, maxZoom: 22, referrerPolicy: "no-referrer", attribution: "Google" });
+
       openTopo.addTo(map);
 
       L.control.layers(
         {
           "OpenTopoMap": openTopo,
+          "Google Earth / Sat (HD)": googleSat,
+          "Google Hybrid (Sat + Trails)": googleHybrid,
           "Esri Satellite": esriSat
         },
         null,

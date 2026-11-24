@@ -2032,6 +2032,7 @@
           </label>
           <div class="btn-group">
             <button class="btn" id="importKmlBtn" title="Load Coast.kml or any KML file">Import KML</button>
+            <button class="btn" id="importJsonBtn" type="button" title="Import JSON data">Import JSON</button>
             <input type="file" id="kmlFileInput" accept=".kml,.xml" style="display:none">
             <button class="btn" id="fitBtn" title="Zoom to visible markers">Fit Map</button>
             <button class="btn btn-primary" id="resetBtn">Reset</button>
@@ -2060,7 +2061,7 @@
       <div id="map" class="" tabindex="0"></div>
 
       <!-- Floating Live Smartphone GPS Controls -->
-      <div class="gps-controls" id="gpsControls" style="bottom:58px;left:10px;z-index:1650;">
+      <div class="gps-controls" id="gpsControls" style="bottom:14px;left:10px;z-index:1650;">
         <button class="gps-btn" id="locateBtn" type="button" title="Track live smartphone GPS location">
           📍 Locate Me
         </button>
@@ -2943,7 +2944,7 @@ parking,Peninha,Kalash,Parking Kalash / Pedras Irmas,,,38.771179,-9.455504,,fals
 .qs-tag{font-size:10px;font-weight:800;padding:2px 6px;border-radius:999px;text-transform:uppercase;flex-shrink:0}
 </style>
 <div id="quickSearchBox"><input id="quickSearchInput" type="text" placeholder="Search area, sector, boulder..." autocomplete="off"><button id="quickSearchClear" type="button" style="display: none;">✕</button><div id="quickSearchResults" style="display: none;"></div></div>
-<button id="importJsonBtn" style="position:fixed;bottom:14px;left:50%;transform:translateX(-50%);z-index:1500;background:#d97706;color:#fff;border:none;border-radius:999px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.35);">💾 Import JSON Data</button><input id="jsonFileInput" type="file" accept=".json,application/json" style="display:none;">
+<input id="jsonFileInput" type="file" accept=".json,application/json" style="display:none;">
 
 <button id="zsOpen" style="position:fixed;bottom:14px;right:14px;z-index:1600;background:#0f172a;color:#fff;border:none;border-radius:999px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.35);">✏️ Draw/Edit Areas/Sectors</button>
 <div id="zsBox" style="display:none;position:fixed;bottom:56px;right:14px;z-index:2200;background:#fff;border:1px solid #cbd5e1;border-radius:12px;width:300px;padding:12px;box-shadow:0 10px 30px rgba(0,0,0,.28);font-family:sans-serif;font-size:12px;">

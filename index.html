@@ -39,7 +39,7 @@
 
     .app {
       display: flex;
-      height: 100vh;
+      height: 100dvh;
       width: 100vw;
       position: relative;
     }
@@ -1821,6 +1821,7 @@
     }
 
     @media (max-width: 768px) {
+      .popup-body { max-height: 36vh !important; }
       .sidebar {
         position: absolute;
         left: 0;
@@ -2059,7 +2060,7 @@
       <div id="map" class="" tabindex="0"></div>
 
       <!-- Floating Live Smartphone GPS Controls -->
-      <div class="gps-controls" id="gpsControls" style="bottom:62px;left:10px;z-index:1650;">
+      <div class="gps-controls" id="gpsControls" style="bottom:84px;left:10px;z-index:1650;">
         <button class="gps-btn" id="locateBtn" type="button" title="Track live smartphone GPS location">
           📍 Locate Me
         </button>
@@ -5484,6 +5485,7 @@ parking,Peninha,Kalash,Parking Kalash / Pedras Irmas,,,38.771179,-9.455504,,fals
       }
 
       map.on("popupopen", e => {
+        setTimeout(() => { const el = e.popup?.getElement(); if (el && el.getBoundingClientRect().top < 68) map.panBy([0, -(72 - el.getBoundingClientRect().top)], { animate: true }); }, 60);
         const marker = e.popup && e.popup._source;
         if (marker && marker._boulderRef) wirePopupControls(e.popup, marker._boulderRef); if (marker && marker._parkingRef) { const b = e.popup.getElement()?.querySelector(".pk-edit-btn"); if (b) b.onclick = () => openParkingModal(marker._parkingRef); }
       });

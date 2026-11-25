@@ -1,16 +1,14 @@
-const APP_CACHE = "sintra-app-v93";
+const APP_CACHE = "sintra-app-v93b";
 const IMG_CACHE = "sintra-imgs-v1";
 const TILE_CACHE = "sintra-tiles-v1";
-const CORE_ASSETS = [
-  "./",
-  "./index.html",
-  "https://unpkg.com",
-  "https://unpkg.com"
-];
 
 self.addEventListener("install", e => {
   e.waitUntil(
-    caches.open(APP_CACHE).then(c => c.addAll(CORE_ASSETS)).then(() => self.skipWaiting())
+    caches.open(APP_CACHE).then(async c => {
+      for (const u of ["./", "./index.html"]) {
+        try { await c.add(new Request(u, { cache: "reload" })); } catch (err) {}
+      }
+    }).then(() => self.skipWaiting())
   );
 });
 
@@ -30,28 +28,41 @@ self.addEventListener("fetch", e => {
   if (req.mode === "navigate" || url.pathname.endsWith("index.html") || url.pathname.endsWith("/")) {
     e.respondWith(
       fetch(req).then(res => {
-        const copy = res.clone();
-        caches.open(APP_CACHE).then(c => c.put(req, copy));
+        if (res && res.ok) {
+          const copy = res.clone();
+          caches.open(APP_CACHE).then(c => c.put("./index.html", copy));
+        }
         return res;
-      }).catch(() => caches.match(req).then(r => r || caches.match("./index.html")))
+      }).catch(async () => {
+        const c = await caches.open(APP_CACHE);
+        return (await c.match(req, { ignoreSearch: true })) || (await c.match("./index.html")) || (await c.match("./"));
+      })
     );
     return;
   }
 
   if (url.pathname.includes("Boulder_Images/") || url.pathname.includes("Coast_Images/") || url.hostname.includes("wixstatic.com")) {
-    e.respondWith(caches.open(IMG_CACHE).then(c => c.match(req).then(r => r || fetch(req))));
+    e.respondWith(caches.open(IMG_CACHE).then(c => c.match(req, { ignoreSearch: true }).then(r => r || fetch(req))));
     return;
   }
 
-  if (url.hostname.includes("google") || url.hostname.includes("openstreetmap") || url.hostname.includes("arcgisonline")) {
+  if (url.hostname.includes("unpkg.com")) {
     e.respondWith(
-      caches.open(TILE_CACHE).then(c => c.match(req).then(r => r || fetch(req).then(res => {
-        if (res.ok) c.put(req, res.clone());
+      caches.open(APP_CACHE).then(c => c.match(req).then(r => r || fetch(req).then(res => {
+        if (res && res.ok) c.put(req, res.clone());
         return res;
       })))
     );
     return;
   }
 
-  e.respondWith(caches.match(req).then(r => r || fetch(req)));
+  if (url.hostname.includes("google") || url.hostname.includes("openstreetmap") || url.hostname.includes("arcgisonline")) {
+    e.respondWith(
+      caches.open(TILE_CACHE).then(c => c.match(req).then(r => r || fetch(req).then(res => {
+        if (res && res.ok) c.put(req, res.clone());
+        return res;
+      })))
+    );
+    return;
+  }
 });

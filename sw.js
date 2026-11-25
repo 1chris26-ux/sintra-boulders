@@ -1,4 +1,4 @@
-const APP_CACHE = "sintra-app-v93b";
+const APP_CACHE = "sintra-app-v93c";
 const IMG_CACHE = "sintra-imgs-v1";
 const TILE_CACHE = "sintra-tiles-v1";
 
@@ -49,7 +49,7 @@ self.addEventListener("fetch", e => {
   if (url.hostname.includes("unpkg.com")) {
     e.respondWith(
       caches.open(APP_CACHE).then(c => c.match(req).then(r => r || fetch(req).then(res => {
-        if (res && res.ok) c.put(req, res.clone());
+        if (res && (res.ok || res.type === "opaque")) c.put(req, res.clone());
         return res;
       })))
     );
@@ -59,7 +59,7 @@ self.addEventListener("fetch", e => {
   if (url.hostname.includes("google") || url.hostname.includes("openstreetmap") || url.hostname.includes("arcgisonline")) {
     e.respondWith(
       caches.open(TILE_CACHE).then(c => c.match(req).then(r => r || fetch(req).then(res => {
-        if (res && res.ok) c.put(req, res.clone());
+        if (res && (res.ok || res.type === "opaque")) c.put(req, res.clone());
         return res;
       })))
     );

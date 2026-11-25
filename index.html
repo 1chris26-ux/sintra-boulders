@@ -7230,7 +7230,7 @@ parking,Tapada,"Prison, Fortaleza & Terraço",Tapada P2 (Rua Minarvela),,,38.778
         if (!list.length) offBtn.disabled = true;
         offBtn.onclick = ev => {
           ev.stopPropagation();
-          window.sintraOffline.cachePhotoList(list, (d, t, paused) => {
+          const tList = window.sintraOffline.collectScopeTiles(areaName, sectorName, isAreaScope); window.sintraOffline.cachePhotoList(list.concat(tList), (d, t, paused) => {
             offBtn.textContent = d >= t ? `✅ ${t}/${t} Saved Offline` : (paused ? `⏸ Paused (${d}/${t})` : `⏳ Saving ${d}/${t}...`);
           });
         };
@@ -7602,6 +7602,32 @@ parking,Tapada,"Prison, Fortaleza & Terraço",Tapada P2 (Rua Minarvela),,,38.778
     return Array.from(ext);
   }
 
+  
+  function collectScopeTiles(areaName, sectorName, isAreaScope) {
+    const tiles = new Set();
+    const bList = (window.boulders || []).filter(b => {
+      if (b.lat == null || b.lon == null) return false;
+      if (areaName && normKey(b.area) !== normKey(areaName)) return false;
+      if (!isAreaScope && sectorName && normKey(b.sector) !== normKey(sectorName)) return false;
+      return true;
+    });
+    const zooms =;
+    bList.forEach(b => {
+      zooms.forEach(z => {
+        const n = Math.pow(2, z);
+        const x = Math.floor((b.lon + 180) / 360 * n);
+        const latRad = b.lat * Math.PI / 180;
+        const y = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n);
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dy = -1; dy <= 1; dy++) {
+            tiles.add(`https://google.com{x+dx}&y=${y+dy}&z=${z}`);
+          }
+        }
+      });
+    });
+    return Array.from(tiles);
+  }
+
   async function cachePhotoList(urls, onProgress) {
     if (!("caches" in window)) { alert("Offline Cache API not supported."); return; }
     const cache = await caches.open(IMG_CACHE);
@@ -7634,7 +7660,7 @@ parking,Tapada,"Prison, Fortaleza & Terraço",Tapada P2 (Rua Minarvela),,,38.778
     if (onProgress) onProgress(done, urls.length, batchPaused);
   }
 
-  window.sintraOffline = { collectScopePhotos, cachePhotoList, pause: () => { batchPaused = true; }, isRunning: () => batchRunning };
+  window.sintraOffline = { collectScopePhotos, collectScopeTiles, cachePhotoList, pause: () => { batchPaused = true; }, isRunning: () => batchRunning };
 })();
 </script>
 
@@ -7646,7 +7672,7 @@ document.addEventListener("DOMContentLoaded", () => {
   allBtn.onclick = () => {
     const allUrls = window.sintraOffline.collectScopePhotos(null, null, true);
     pauseBtn.style.display = "inline-block";
-    window.sintraOffline.cachePhotoList(allUrls, (d, t, paused) => {
+    const allTiles = window.sintraOffline.collectScopeTiles(null, null, true); window.sintraOffline.cachePhotoList(allUrls.concat(allTiles), (d, t, paused) => {
       if (d >= t) {
         allBtn.textContent = `✅ All ${t} Photos Saved Offline`;
         pauseBtn.style.display = "none";

@@ -7699,19 +7699,28 @@ parking,Tapada,"Prison, Fortaleza & Terraço",Tapada P2 (Rua Minarvela),,,38.778
 
       updateStatusUI("🔄 Merging index.html...", "#38bdf8");
       const fileData = await ghApi("index.html", "GET", token);
-      let remoteHtml = b64ToUtf8(fileData.content);
+      let b64Content = (fileData.content || "").trim();
+      if (!b64Content && fileData.git_url) {
+        const blobRes = await fetch(fileData.git_url, {
+          headers: { "Authorization": `Bearer ${token}`, "Accept": "application/vnd.github+json" }
+        });
+        if (!blobRes.ok) throw new Error(`Blob ${blobRes.status}`);
+        const blobJson = await blobRes.json();
+        b64Content = blobJson.content || "";
+      }
+      let remoteHtml = b64ToUtf8(b64Content);
 
       let remoteState = {};
       const m = remoteHtml.match(/<script id="baked-state-json"[^>]*>([\s\S]*?)<\/script>/);
-      if (m) {
-        try { remoteState = JSON.parse(m[1]); } catch (e) {}
+      if (m && m.at(1)) {
+        try { remoteState = JSON.parse(m.at(1)); } catch (ex) {}
       }
 
       const merged = mergeStates(remoteState, localState);
       const safeJson = JSON.stringify(merged).replace(/<\//g, "<\\/");
 
-      if (m) {
-        remoteHtml = remoteHtml.replace(m[0], `<script id="baked-state-json" type="application/json">${safeJson}<\/script>`);
+      if (m && m.at(0)) {
+        remoteHtml = remoteHtml.replace(m.at(0), `<script id="baked-state-json" type="application/json">${safeJson}<\/script>`);
       } else {
         remoteHtml = remoteHtml.replace("</body>", `<script id="baked-state-json" type="application/json">${safeJson}<\/script>\n</body>`);
       }
@@ -7729,7 +7738,7 @@ parking,Tapada,"Prison, Fortaleza & Terraço",Tapada P2 (Rua Minarvela),,,38.778
     } catch (err) {
       syncing = false;
       console.error("GitHub Sync Error:", err);
-      updateStatusUI("⚠️ Sync paused (will retry)", "#f87171");
+      updateStatusUI("⚠️ " + (err && err.message ? err.message : "Sync failed"), "#f87171");
     }
   }
 

@@ -2043,7 +2043,7 @@
         </div>
         <div class="sidebar-extra-actions">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;"><button class="btn-add-boulder" id="addBoulderBtn" type="button">+ Boulder</button><button class="btn-add-boulder" id="addParkingBtn" type="button" style="background:#1d4ed8;border-color:#1e40af;">+ Parking</button></div>
-          <div style="display:flex;gap:6px;margin-bottom:8px;"><button type="button" id="downloadAllOfflineBtn" style="flex:1;padding:8px 10px;background:#0f172a;color:#fbbf24;border:1px solid #fbbf24;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer;">📥 Save All Map Photos Offline</button><button type="button" id="pauseOfflineBtn" style="display:none;padding:8px 10px;background:#334155;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;">⏸</button></div><button class="btn-backup-html" id="downloadBackupBtn" type="button" title="Save all edits, new boulders, photos &amp; vector lines into a self-contained HTML">Download Backup HTML</button>
+          <button class="btn-backup-html" id="downloadBackupBtn" type="button" title="Save all edits, new boulders, photos &amp; vector lines into a self-contained HTML">Download Backup HTML</button>
         </div>
         <div class="kml-status" id="kmlStatus"></div>
       </div>
@@ -3417,7 +3417,7 @@ parking,Tapada,"Prison, Fortaleza & Terraço",Tapada P2 (Rua Minarvela),,,38.778
       let parkings = [];
 
       function refreshCollections() {
-        boulders = Array.from(boulderMap.values()); window.boulders = boulders;
+        boulders = Array.from(boulderMap.values());
         parkings = Array.from(parkingMap.values());
 
         const coordBuckets = new Map();
@@ -7221,20 +7221,8 @@ parking,Tapada,"Prison, Fortaleza & Terraço",Tapada P2 (Rua Minarvela),,,38.778
         </div>
         <div style="padding:11px 14px 12px;">
           ${boulderCount > 0 ? `<div style="display:flex;gap:6px;align-items:flex-end;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:8px 6px 6px;">${visibleBuckets.map((x, idx) => { const h = Math.round((x.items.length / maxC) * 44); return `<div data-bidx="${idx}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;padding:3px 2px;border-radius:6px;"><span style="font-size:10px;font-weight:800;color:#0f172a;">${x.items.length}</span><div style="width:100%;height:46px;background:#e2e8f0;border-radius:5px;display:flex;align-items:flex-end;overflow:hidden;"><div style="width:100%;height:${h}px;background:${x.color};border-radius:4px 4px 0 0;"></div></div><span style="font-size:9px;font-weight:700;color:#475569;white-space:nowrap;">${x.label}</span></div>`; }).join("")}</div><div class="grade-drill-list" style="margin-top:8px;max-height:145px;overflow-y:auto;border-top:1px solid #e2e8f0;padding-top:6px;display:none;"></div>` : `<div style="font-size:12px;color:#475569;background:#f8fafc;border:1.5px dashed #cbd5e1;border-radius:8px;padding:10px;text-align:center;">No boulders mapped in this sector yet.</div>`}
-          <button type="button" class="sec-offline-btn" style="margin-top:8px;width:100%;padding:7px 10px;background:#0f172a;color:#fbbf24;border:1px solid #fbbf24;border-radius:8px;font-size:11px;font-weight:800;cursor:pointer;">📥 Save Photos Offline</button>${sectorName ? `<button type="button" class="sec-add-boulder-btn" style="margin-top:10px;width:100%;padding:8px 12px;background:linear-gradient(135deg,#16a34a 0%,#15803d 100%);color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer;">+ Add New Boulder to ${escapeHtml(sectorName)}</button>` : ""}
+          ${sectorName ? `<button type="button" class="sec-add-boulder-btn" style="margin-top:10px;width:100%;padding:8px 12px;background:linear-gradient(135deg,#16a34a 0%,#15803d 100%);color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer;">+ Add New Boulder to ${escapeHtml(sectorName)}</button>` : ""}
         </div>`;
-      const offBtn = wrap.querySelector(".sec-offline-btn");
-      if (offBtn && window.sintraOffline) {
-        const list = window.sintraOffline.collectScopePhotos(areaName, sectorName, isAreaScope);
-        offBtn.textContent = list.length ? `📥 Save ${isAreaScope ? (areaName || "Area") : sectorName} Offline (${list.length})` : "No photos in this area";
-        if (!list.length) offBtn.disabled = true;
-        offBtn.onclick = ev => {
-          ev.stopPropagation();
-          const tList = window.sintraOffline.collectScopeTiles(areaName, sectorName, isAreaScope); window.sintraOffline.cachePhotoList(list.concat(tList), (d, t, paused) => {
-            offBtn.textContent = d >= t ? `✅ ${t}/${t} Saved Offline` : (paused ? `⏸ Paused (${d}/${t})` : `⏳ Saving ${d}/${t}...`);
-          });
-        };
-      }
       const addSecBtn = wrap.querySelector(".sec-add-boulder-btn");
       if (addSecBtn) addSecBtn.onclick = ev => { ev.stopPropagation(); map.closePopup(); openAddBoulderModal(areaName, sectorName); };
       const toggleBtn = wrap.querySelector(".scope-toggle-btn");
@@ -7527,167 +7515,4 @@ parking,Tapada,"Prison, Fortaleza & Terraço",Tapada P2 (Rua Minarvela),,,38.778
       </div>
     
       </div>
-    </div>
-<script>
-(function() {
-  if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js").catch(() => {});
-    });
-  }
-
-  const IMG_CACHE = "sintra-imgs-v1";
-  let batchPaused = false;
-  let batchRunning = false;
-
-  function isExternalImg(u) {
-    if (!u || typeof u !== "string") return false;
-    const s = u.trim();
-    return s.includes("_Images/") || s.startsWith("http://") || s.startsWith("https://");
-  }
-
-  function normKey(s) {
-    return (s || "").trim().toLowerCase().replace(/\s+/g, " ");
-  }
-
-  function getAllBakedPhotos() {
-    const out = {};
-    try {
-      const el = document.getElementById("baked-state-json");
-      const raw = el ? (JSON.parse(el.textContent) || {}).photos || {} : {};
-      Object.keys(raw).forEach(k => { out[normKey(k)] = raw[k]; });
-    } catch (e) {}
-    try {
-      const ls = JSON.parse(localStorage.getItem("sintra_map_edits_v2") || "{}").photos || {};
-      Object.keys(ls).forEach(k => { out[normKey(k)] = ls[k]; });
-    } catch (e) {}
-    return out;
-  }
-
-  function collectScopePhotos(areaName, sectorName, isAreaScope) {
-    const ext = new Set();
-    const baked = getAllBakedPhotos();
-
-    if (!areaName && !sectorName) {
-      Object.values(baked).forEach(arr => {
-        if (Array.isArray(arr)) arr.forEach(p => { if (isExternalImg(p)) ext.add(p.trim()); });
-      });
-    }
-
-    const bList = window.boulders || [];
-    const areaSectors = new Set();
-    bList.forEach(b => {
-      if (areaName && normKey(b.area) !== normKey(areaName)) return;
-      if (!isAreaScope && sectorName && normKey(b.sector) !== normKey(sectorName)) return;
-      if (b.sector) areaSectors.add(normKey(b.sector));
-
-      ((b.image_url || "") + "|" + (b.image_file || "")).split("|").forEach(p => {
-        if (isExternalImg(p)) ext.add(p.trim());
-      });
-      const k = normKey(b.sector) + "||" + normKey(b.name);
-      if (Array.isArray(baked[k])) {
-        baked[k].forEach(p => { if (isExternalImg(p)) ext.add(p.trim()); });
-      }
-    });
-
-    if (areaName || sectorName) {
-      Object.keys(baked).forEach(k => {
-        const secPart = k.split("||")[0];
-        if (areaSectors.has(secPart) || (sectorName && secPart === normKey(sectorName))) {
-          const arr = baked[k];
-          if (Array.isArray(arr)) arr.forEach(p => { if (isExternalImg(p)) ext.add(p.trim()); });
-        }
-      });
-    }
-    return Array.from(ext);
-  }
-
-  
-  function collectScopeTiles(areaName, sectorName, isAreaScope) {
-    const tiles = new Set();
-    const bList = (window.boulders || []).filter(b => {
-      if (b.lat == null || b.lon == null) return false;
-      if (areaName && normKey(b.area) !== normKey(areaName)) return false;
-      if (!isAreaScope && sectorName && normKey(b.sector) !== normKey(sectorName)) return false;
-      return true;
-    });
-    const zooms = new Array(12, 13, 14, 15, 16, 17);
-    bList.forEach(b => {
-      zooms.forEach(z => {
-        const n = Math.pow(2, z);
-        const x = Math.floor((b.lon + 180) / 360 * n);
-        const latRad = b.lat * Math.PI / 180;
-        const y = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n);
-        const r = z <= 14 ? 1 : 0;
-        for (let dx = -r; dx <= r; dx++) {
-          for (let dy = -r; dy <= r; dy++) {
-            tiles.add(`https://://google.com/vt/lyrs=s&x=${x+dx}&y=${y+dy}&z=${z}`);
-            tiles.add(`https://arcgisonline.com{z}/${y+dy}/${x+dx}`);
-          }
-        }
-      });
-    });
-    return Array.from(tiles);
-  }
-
-  async function cachePhotoList(urls, onProgress) {
-    if (!("caches" in window)) { alert("Offline Cache API not supported."); return; }
-    const cache = await caches.open(IMG_CACHE);
-    const missing = [];
-    for (const u of urls) {
-      const hit = await cache.match(u);
-      if (!hit) missing.push(u);
-    }
-    let done = urls.length - missing.length;
-    if (onProgress) onProgress(done, urls.length, false);
-    if (!missing.length) return;
-
-    batchRunning = true;
-    batchPaused = false;
-    const BATCH = 15;
-    for (let i = 0; i < missing.length; i += BATCH) {
-      if (batchPaused) break;
-      const slice = missing.slice(i, i + BATCH);
-      await Promise.all(slice.map(async u => {
-        try {
-          const req = u.startsWith("http") ? new Request(u, { mode: "no-cors" }) : u;
-          const res = await fetch(req);
-          if (res.ok || res.type === "opaque") await cache.put(u, res);
-        } catch (e) {}
-        done++;
-        if (onProgress) onProgress(done, urls.length, batchPaused);
-      }));
-    }
-    batchRunning = false;
-    if (onProgress) onProgress(done, urls.length, batchPaused);
-  }
-
-  window.sintraOffline = { collectScopePhotos, collectScopeTiles, cachePhotoList, pause: () => { batchPaused = true; }, isRunning: () => batchRunning };
-})();
-</script>
-
-<script>
-document.addEventListener("DOMContentLoaded", () => {
-  const allBtn = document.getElementById("downloadAllOfflineBtn");
-  const pauseBtn = document.getElementById("pauseOfflineBtn");
-  if (!allBtn || !window.sintraOffline) return;
-  allBtn.onclick = () => {
-    const allUrls = window.sintraOffline.collectScopePhotos(null, null, true);
-    pauseBtn.style.display = "inline-block";
-    const allTiles = window.sintraOffline.collectScopeTiles(null, null, true); window.sintraOffline.cachePhotoList(allUrls.concat(allTiles), (d, t, paused) => {
-      if (d >= t) {
-        allBtn.textContent = `✅ All ${t} Photos Saved Offline`;
-        pauseBtn.style.display = "none";
-      } else if (paused) {
-        allBtn.textContent = `▶ Resume Offline Download (${d}/${t})`;
-        pauseBtn.style.display = "none";
-      } else {
-        allBtn.textContent = `⏳ Downloading ${d}/${t}...`;
-      }
-    });
-  };
-  pauseBtn.onclick = () => window.sintraOffline.pause();
-});
-</script>
-</body>
-</html>
+    </div></body></html>

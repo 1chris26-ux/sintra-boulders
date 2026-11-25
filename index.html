@@ -7619,21 +7619,24 @@ parking,Tapada,"Prison, Fortaleza & Terraço",Tapada P2 (Rua Minarvela),,,38.778
     return (s || "boulder").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 42);
   }
 
+  const API_ROOT = ["https:/", "://github.com", "repos", OWNER, REPO].join("/");
+
   async function ghApi(path, method, token, bodyObj) {
-    const url = `https://github.com{OWNER}/${REPO}/contents/${path}` + (method === "GET" ? `?ref=${BRANCH}&t=${Date.now()}` : "");
-    const opts = {
-      method,
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        "Accept": "application/vnd.github+json",
-        "Content-Type": "application/json"
-      }
+    const cleanPath = path.replace(/^\/+/, "");
+    const url = `${API_ROOT}/${cleanPath}` + (method === "GET" ? `?ref=${BRANCH}` : "");
+    const headers = {
+      "Authorization": `Bearer ${token}`,
+      "Accept": "application/vnd.github+json"
     };
-    if (bodyObj) opts.body = JSON.stringify(bodyObj);
+    const opts = { method, headers, cache: "no-store" };
+    if (bodyObj) {
+      headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(bodyObj);
+    }
     const res = await fetch(url, opts);
     if (!res.ok) {
       const errTxt = await res.text().catch(() => "");
-      throw new Error(`GitHub ${res.status}: ${errTxt.slice(0, 120)}`);
+      throw new Error(`GitHub ${res.status}: ${errTxt.slice(0, 100)}`);
     }
     return res.json();
   }
@@ -7645,12 +7648,12 @@ parking,Tapada,"Prison, Fortaleza & Terraço",Tapada P2 (Rua Minarvela),,,38.778
     const filePath = `Boulder_Images/field_${slugify(key)}_${idx}_${hash}.jpg`;
     let existingSha = null;
     try {
-      const info = await ghApi(filePath, "GET", token);
+      const info = await ghApi(`contents/${filePath}`, "GET", token);
       existingSha = info.sha;
     } catch (e) {}
     const payload = { message: `Add field photo ${filePath}`, content: rawB64, branch: BRANCH };
     if (existingSha) payload.sha = existingSha;
-    await ghApi(filePath, "PUT", token, payload);
+    await ghApi(`contents/${filePath}`, "PUT", token, payload);
     return filePath;
   }
 
@@ -7698,17 +7701,15 @@ parking,Tapada,"Prison, Fortaleza & Terraço",Tapada P2 (Rua Minarvela),,,38.778
       }
 
       updateStatusUI("🔄 Merging index.html...", "#38bdf8");
-      const fileData = await ghApi("index.html", "GET", token);
-      let b64Content = (fileData.content || "").trim();
-      if (!b64Content && fileData.git_url) {
-        const blobRes = await fetch(fileData.git_url, {
-          headers: { "Authorization": `Bearer ${token}`, "Accept": "application/vnd.github+json" }
-        });
-        if (!blobRes.ok) throw new Error(`Blob ${blobRes.status}`);
-        const blobJson = await blobRes.json();
-        b64Content = blobJson.content || "";
-      }
-      let remoteHtml = b64ToUtf8(b64Content);
+      const refData = await ghApi("git/ref/heads/" + BRANCH, "GET", token);
+      const commitData = await ghApi("git/commits/" + refData.object.sha, "GET", token);
+      const treeData = await ghApi("git/trees/" + commitData.tree.sha, "GET", token);
+      const idxEntry = (treeData.tree || []).find(t => t.path === "index.html");
+      if (!idxEntry) throw new Error("index.html not found in repo");
+
+      const pageRes = await fetch("./index.html?nocache=" + Date.now(), { cache: "no-store" });
+      if (!pageRes.ok) throw new Error("Local fetch " + pageRes.status);
+      let remoteHtml = await pageRes.text();
 
       let remoteState = {};
       const m = remoteHtml.match(/<script id="baked-state-json"[^>]*>([\s\S]*?)<\/script>/);
@@ -7725,10 +7726,10 @@ parking,Tapada,"Prison, Fortaleza & Terraço",Tapada P2 (Rua Minarvela),,,38.778
         remoteHtml = remoteHtml.replace("</body>", `<script id="baked-state-json" type="application/json">${safeJson}<\/script>\n</body>`);
       }
 
-      await ghApi("index.html", "PUT", token, {
+      await ghApi("contents/index.html", "PUT", token, {
         message: "Auto-sync field edits and topo lines from phone",
         content: utf8ToB64(remoteHtml),
-        sha: fileData.sha,
+        sha: idxEntry.sha,
         branch: BRANCH
       });
 

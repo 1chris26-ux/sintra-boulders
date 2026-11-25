@@ -2043,6 +2043,19 @@
         </div>
         <div class="sidebar-extra-actions">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;"><button class="btn-add-boulder" id="addBoulderBtn" type="button">+ Boulder</button><button class="btn-add-boulder" id="addParkingBtn" type="button" style="background:#1d4ed8;border-color:#1e40af;">+ Parking</button></div>
+          <div id="ghSyncBox" style="margin-bottom:8px;padding:8px 10px;background:#0f172a;color:#f8fafc;border-radius:8px;border:1px solid #334155;font-size:12px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
+              <span id="ghSyncStatus" style="font-weight:700;color:#94a3b8;">⚪ GitHub Sync: No token</span>
+              <div style="display:flex;gap:4px;">
+                <button type="button" id="ghSyncNowBtn" style="padding:4px 8px;background:#16a34a;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;">Sync Now</button>
+                <button type="button" id="ghTokenToggleBtn" style="padding:4px 7px;background:#334155;color:#e2e8f0;border:none;border-radius:6px;font-size:11px;cursor:pointer;" title="Configure GitHub Token">⚙️</button>
+              </div>
+            </div>
+            <div id="ghTokenPanel" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid #334155;">
+              <input type="password" id="ghTokenInput" placeholder="Paste github_pat_... token" style="width:100%;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid #475569;background:#1e293b;color:#fff;font-size:11px;margin-bottom:6px;">
+              <button type="button" id="ghSaveTokenBtn" style="width:100%;padding:5px 8px;background:#2563eb;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">Save Token on This Device</button>
+            </div>
+          </div>
           <button class="btn-backup-html" id="downloadBackupBtn" type="button" title="Save all edits, new boulders, photos &amp; vector lines into a self-contained HTML">Download Backup HTML</button>
         </div>
         <div class="kml-status" id="kmlStatus"></div>
@@ -7015,6 +7028,28 @@ parking,Tapada,"Prison, Fortaleza & Terraço",Tapada P2 (Rua Minarvela),,,38.778
   });
 
   // Backup HTML Export
+  window.__getSintraBackupState = async function() {
+    if (typeof loadAllSavedStorage === "function") await loadAllSavedStorage();
+    return {
+      edits: savedStore.edits || {},
+      created: savedStore.created || [],
+      deleted: savedStore.deleted || [],
+      parkingEdits: savedStore.parkingEdits || {},
+      parkingCreated: savedStore.parkingCreated || [],
+      parkingDeleted: savedStore.parkingDeleted || [],
+      zones: JSON.parse(localStorage.getItem("sintra_custom_zones_v1") || "{}"),
+      customMeta: JSON.parse(localStorage.getItem("sintra_custom_meta_v1") || "{}"),
+      photos: Object.fromEntries(customPhotosMap.entries()),
+      topos: Object.fromEntries(customToposMap.entries())
+    };
+  };
+  window.__setSintraPhotoUrl = function(key, idx, url) {
+    const arr = customPhotosMap.get(key);
+    if (Array.isArray(arr) && arr[idx]) {
+      arr[idx] = url;
+      customPhotosMap.set(key, arr);
+    }
+  };
   const downloadBackupBtn = document.getElementById("downloadBackupBtn");
   if (downloadBackupBtn) {
     downloadBackupBtn.addEventListener("click", async () => {
@@ -7515,4 +7550,215 @@ parking,Tapada,"Prison, Fortaleza & Terraço",Tapada P2 (Rua Minarvela),,,38.778
       </div>
     
       </div>
-    </div></body></html>
+    </div>
+<script>
+(function() {
+  const OWNER = "1chris26-ux";
+  const REPO = "sintra-boulders";
+  const BRANCH = "main";
+  const TOKEN_KEY = "sintra_gh_token_v1";
+  const PENDING_KEY = "sintra_gh_pending_v1";
+  const IDLE_MS = 45000;
+
+  let idleTimer = null;
+  let syncing = false;
+
+  function getToken() { return (localStorage.getItem(TOKEN_KEY) || "").trim(); }
+  function isPending() { return localStorage.getItem(PENDING_KEY) === "1"; }
+
+  function updateStatusUI(customMsg, color) {
+    const el = document.getElementById("ghSyncStatus");
+    if (!el) return;
+    if (customMsg) { el.textContent = customMsg; el.style.color = color || "#fbbf24"; return; }
+    if (!getToken()) { el.textContent = "⚪ GitHub Sync: Set token ⚙️"; el.style.color = "#94a3b8"; return; }
+    if (syncing) { el.textContent = "🔄 Syncing to GitHub..."; el.style.color = "#38bdf8"; return; }
+    if (isPending()) { el.textContent = "🟡 Unsynced field edits"; el.style.color = "#fbbf24"; return; }
+    el.textContent = "🟢 Synced with GitHub"; el.style.color = "#4ade80";
+  }
+
+  function markDirty() {
+    localStorage.setItem(PENDING_KEY, "1");
+    updateStatusUI();
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => { if (navigator.onLine) runGitHubSync(); }, IDLE_MS);
+  }
+
+  const origSetItem = localStorage.setItem.bind(localStorage);
+  localStorage.setItem = function(k, v) {
+    origSetItem(k, v);
+    if (k === "sintra_map_edits_v2" || k === "sintra_custom_zones_v1" || k === "sintra_custom_meta_v1") {
+      markDirty();
+    }
+  };
+
+  if (window.IDBObjectStore && IDBObjectStore.prototype) {
+    const origPut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function() {
+      if (this.name === "kv") markDirty();
+      return origPut.apply(this, arguments);
+    };
+  }
+
+  function utf8ToB64(str) {
+    const bytes = new TextEncoder().encode(str);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 8192) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    }
+    return btoa(bin);
+  }
+
+  function b64ToUtf8(b64) {
+    const bin = atob(b64.replace(/\s+/g, ""));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  }
+
+  function slugify(s) {
+    return (s || "boulder").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 42);
+  }
+
+  async function ghApi(path, method, token, bodyObj) {
+    const url = `https://github.com{OWNER}/${REPO}/contents/${path}` + (method === "GET" ? `?ref=${BRANCH}&t=${Date.now()}` : "");
+    const opts = {
+      method,
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Accept": "application/vnd.github+json",
+        "Content-Type": "application/json"
+      }
+    };
+    if (bodyObj) opts.body = JSON.stringify(bodyObj);
+    const res = await fetch(url, opts);
+    if (!res.ok) {
+      const errTxt = await res.text().catch(() => "");
+      throw new Error(`GitHub ${res.status}: ${errTxt.slice(0, 120)}`);
+    }
+    return res.json();
+  }
+
+  async function uploadDataUrlPhoto(key, idx, dataUrl, token) {
+    const comma = dataUrl.indexOf(",");
+    const rawB64 = dataUrl.slice(comma + 1);
+    const hash = Math.abs(rawB64.slice(0, 120).split("").reduce((a, c) => ((a << 5) - a + c.charCodeAt(0)) | 0, 0)).toString(16);
+    const filePath = `Boulder_Images/field_${slugify(key)}_${idx}_${hash}.jpg`;
+    let existingSha = null;
+    try {
+      const info = await ghApi(filePath, "GET", token);
+      existingSha = info.sha;
+    } catch (e) {}
+    const payload = { message: `Add field photo ${filePath}`, content: rawB64, branch: BRANCH };
+    if (existingSha) payload.sha = existingSha;
+    await ghApi(filePath, "PUT", token, payload);
+    return filePath;
+  }
+
+  function mergeStates(remote, local) {
+    const out = Object.assign({}, remote, local);
+    out.edits = Object.assign({}, remote.edits || {}, local.edits || {});
+    out.parkingEdits = Object.assign({}, remote.parkingEdits || {}, local.parkingEdits || {});
+    out.zones = Object.assign({}, remote.zones || {}, local.zones || {});
+    out.customMeta = Object.assign({}, remote.customMeta || {}, local.customMeta || {});
+    out.photos = Object.assign({}, remote.photos || {}, local.photos || {});
+    out.topos = Object.assign({}, remote.topos || {}, local.topos || {});
+
+    const delSet = new Set((remote.deleted || []).concat(local.deleted || []));
+    out.deleted = Array.from(delSet);
+
+    const cMap = new Map();
+    (remote.created || []).concat(local.created || []).forEach(b => {
+      if (b && b.sector && b.name) cMap.set(`${b.sector}||${b.name}`, b);
+    });
+    out.created = Array.from(cMap.values());
+    return out;
+  }
+
+  async function runGitHubSync() {
+    const token = getToken();
+    if (!token || syncing || !navigator.onLine) return;
+    if (!window.__getSintraBackupState) return;
+    syncing = true;
+    updateStatusUI();
+    try {
+      const localState = await window.__getSintraBackupState();
+      const photoKeys = Object.keys(localState.photos || {});
+      for (const k of photoKeys) {
+        const arr = localState.photos[k];
+        if (!Array.isArray(arr)) continue;
+        for (let i = 0; i < arr.length; i++) {
+          const item = arr[i];
+          if (typeof item === "string" && item.startsWith("data:image/")) {
+            updateStatusUI(`📤 Uploading photo ${i + 1}...`, "#38bdf8");
+            const savedPath = await uploadDataUrlPhoto(k, i, item, token);
+            arr[i] = savedPath;
+            if (window.__setSintraPhotoUrl) window.__setSintraPhotoUrl(k, i, savedPath);
+          }
+        }
+      }
+
+      updateStatusUI("🔄 Merging index.html...", "#38bdf8");
+      const fileData = await ghApi("index.html", "GET", token);
+      let remoteHtml = b64ToUtf8(fileData.content);
+
+      let remoteState = {};
+      const m = remoteHtml.match(/<script id="baked-state-json"[^>]*>([\s\S]*?)<\/script>/);
+      if (m) {
+        try { remoteState = JSON.parse(m[1]); } catch (e) {}
+      }
+
+      const merged = mergeStates(remoteState, localState);
+      const safeJson = JSON.stringify(merged).replace(/<\//g, "<\\/");
+
+      if (m) {
+        remoteHtml = remoteHtml.replace(m[0], `<script id="baked-state-json" type="application/json">${safeJson}<\/script>`);
+      } else {
+        remoteHtml = remoteHtml.replace("</body>", `<script id="baked-state-json" type="application/json">${safeJson}<\/script>\n</body>`);
+      }
+
+      await ghApi("index.html", "PUT", token, {
+        message: "Auto-sync field edits and topo lines from phone",
+        content: utf8ToB64(remoteHtml),
+        sha: fileData.sha,
+        branch: BRANCH
+      });
+
+      origSetItem(PENDING_KEY, "0");
+      syncing = false;
+      updateStatusUI("🟢 Synced just now", "#4ade80");
+    } catch (err) {
+      syncing = false;
+      console.error("GitHub Sync Error:", err);
+      updateStatusUI("⚠️ Sync paused (will retry)", "#f87171");
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    const toggleBtn = document.getElementById("ghTokenToggleBtn");
+    const panel = document.getElementById("ghTokenPanel");
+    const input = document.getElementById("ghTokenInput");
+    const saveBtn = document.getElementById("ghSaveTokenBtn");
+    const nowBtn = document.getElementById("ghSyncNowBtn");
+
+    if (input && getToken()) input.value = getToken();
+    if (toggleBtn && panel) toggleBtn.onclick = () => { panel.style.display = panel.style.display === "none" ? "block" : "none"; };
+    if (saveBtn && input) saveBtn.onclick = () => {
+      origSetItem(TOKEN_KEY, input.value.trim());
+      panel.style.display = "none";
+      updateStatusUI();
+      if (isPending()) runGitHubSync();
+    };
+    if (nowBtn) nowBtn.onclick = () => runGitHubSync();
+
+    updateStatusUI();
+    if (isPending() && navigator.onLine) setTimeout(runGitHubSync, 3000);
+  });
+
+  window.addEventListener("online", () => { if (isPending()) setTimeout(runGitHubSync, 2000); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden" && isPending() && navigator.onLine) runGitHubSync();
+  });
+})();
+</script>
+</body>
+</html>

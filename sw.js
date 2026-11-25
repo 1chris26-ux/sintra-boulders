@@ -1,4 +1,4 @@
-const APP_CACHE = "sintra-app-v93c";
+const APP_CACHE = "sintra-app-v93d";
 const IMG_CACHE = "sintra-imgs-v1";
 const TILE_CACHE = "sintra-tiles-v1";
 
@@ -56,10 +56,11 @@ self.addEventListener("fetch", e => {
     return;
   }
 
-  if (url.hostname.includes("google") || url.hostname.includes("openstreetmap") || url.hostname.includes("arcgisonline")) {
+  if (url.hostname.includes("google") || url.hostname.includes("openstreetmap") || url.hostname.includes("opentopomap") || url.hostname.includes("arcgisonline")) {
+    const normUrl = req.url.replace(/mt[0-3]\.google\.com/, "://google.com");
     e.respondWith(
-      caches.open(TILE_CACHE).then(c => c.match(req).then(r => r || fetch(req).then(res => {
-        if (res && (res.ok || res.type === "opaque")) c.put(req, res.clone());
+      caches.open(TILE_CACHE).then(c => c.match(normUrl).then(r => r || fetch(req).then(res => {
+        if (res && (res.ok || res.type === "opaque")) c.put(normUrl, res.clone());
         return res;
       })))
     );

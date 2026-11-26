@@ -7313,8 +7313,10 @@ parking,Tapada,"Prison, Fortaleza & Terraço",Tapada P2 (Rua Minarvela),,,38.778
 
     boulders.forEach(b => {
       if (b.lat === null || b.lon === null) return;
-      const bm = b.name.toLowerCase().includes(q);
-      const pm = b.problems.find(p => p.name.toLowerCase().includes(q));
+      const norm = s => (s||"").normalize("NFD").replace(/\p{Diacritic}/gu,"").toLowerCase();
+      const nq = norm(q);
+      const bm = norm(b.name).includes(nq);
+      const pm = b.problems.find(p => norm(p.name + " " + (p.grade||"")).includes(nq));
       if (bm || pm) {
         items.push({
           type: bm ? "Boulder" : "Problem",
